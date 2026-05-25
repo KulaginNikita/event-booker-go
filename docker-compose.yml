@@ -1,0 +1,46 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./web:/app/web:ro
+    environment:
+      APP_HTTP_PORT: "8080"
+      APP_POSTGRES_DSN: "postgres://eventbooker:eventbooker@postgres:5432/eventbooker?sslmode=disable"
+      APP_BOOKING_PAYMENT_DEADLINE: "2m"
+      APP_SCHEDULER_INTERVAL: "10s"
+      EMAIL_ENABLED: "${EMAIL_ENABLED:-false}"
+      EMAIL_SMTP_HOST: "${EMAIL_SMTP_HOST:-smtp.gmail.com}"
+      EMAIL_SMTP_PORT: "${EMAIL_SMTP_PORT:-587}"
+      EMAIL_USERNAME: "${EMAIL_USERNAME:-}"
+      EMAIL_PASSWORD: "${EMAIL_PASSWORD:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      TG_ENABLED: "${TG_ENABLED:-false}"
+      TG_TOKEN: "${TG_TOKEN:-}"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eventbooker
+      POSTGRES_PASSWORD: eventbooker
+      POSTGRES_DB: eventbooker
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/00001_init.sql:/docker-entrypoint-initdb.d/00001_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventbooker -d eventbooker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

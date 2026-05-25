@@ -1,0 +1,32 @@
+app:
+  name: "event-booker"
+  env: "local"
+
+http:
+  port: "8080"
+
+postgres:
+  dsn: "postgres://eventbooker:eventbooker@localhost:5432/eventbooker?sslmode=disable"
+  max_pool_size: 10
+
+booking:
+  payment_deadline: "2m"
+
+scheduler:
+  interval: "10s"
+
+email:
+  enabled: false
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  username: ""
+  password: ""
+  from: ""
+
+telegram:
+  enabled: false
+  token: ""
+
+logger:
+  level: "debug"
+  format: "console"

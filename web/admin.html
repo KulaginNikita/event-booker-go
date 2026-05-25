@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EventBooker Admin</title>
+  <style>
+    body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #f5f7fb; color: #10213d; }
+    main { width: min(1080px, calc(100% - 32px)); margin: 28px auto; }
+    h1 { margin: 0 0 18px; font-size: 32px; }
+    a { color: #2563eb; font-weight: 700; }
+    .panel { background: white; border: 1px solid #dbe3ef; border-radius: 8px; padding: 20px; margin-bottom: 18px; }
+    form { display: grid; grid-template-columns: 1.4fr 1fr 140px auto; gap: 10px; align-items: end; }
+    label { display: grid; gap: 6px; color: #5d6d87; font-size: 14px; }
+    input { border: 1px solid #cbd7e8; border-radius: 6px; padding: 10px; font-size: 15px; }
+    button { border: 0; border-radius: 6px; padding: 11px 16px; color: white; background: #2563eb; font-weight: 700; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .cards { display: grid; gap: 12px; }
+    .card { border: 1px solid #dbe3ef; border-radius: 8px; padding: 14px; }
+    .title { font-weight: 800; font-size: 18px; margin-bottom: 6px; }
+    .meta { color: #5d6d87; line-height: 1.5; }
+    .message { min-height: 22px; color: #5d6d87; margin-top: 10px; }
+    @media (max-width: 760px) { form { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>EventBooker Admin</h1>
+    <p><a href="/">Открыть пользовательскую страницу</a></p>
+
+    <section class="panel">
+      <form id="eventForm">
+        <label>Название
+          <input id="title" required placeholder="Go workshop">
+        </label>
+        <label>Дата
+          <input id="startsAt" type="datetime-local" required>
+        </label>
+        <label>Мест
+          <input id="capacity" type="number" min="1" value="10" required>
+        </label>
+        <button type="submit">Создать</button>
+      </form>
+      <div id="message" class="message"></div>
+    </section>
+
+    <section class="panel">
+      <div class="toolbar">
+        <h2>Мероприятия</h2>
+        <button id="refresh" type="button">Обновить</button>
+      </div>
+      <div id="events" class="cards"></div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.querySelector("#eventForm");
+    const message = document.querySelector("#message");
+    const eventsBox = document.querySelector("#events");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const startsAt = new Date(document.querySelector("#startsAt").value);
+      const response = await fetch("/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: document.querySelector("#title").value,
+          starts_at: startsAt.toISOString(),
+          capacity: Number(document.querySelector("#capacity").value)
+        })
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "create failed" }));
+        message.textContent = err.error || "Не удалось создать мероприятие.";
+        return;
+      }
+      form.reset();
+      document.querySelector("#capacity").value = 10;
+      message.textContent = "Мероприятие создано.";
+      await loadEvents();
+    });
+
+    document.querySelector("#refresh").addEventListener("click", loadEvents);
+
+    async function loadEvents() {
+      const response = await fetch("/events", { cache: "no-store" });
+      const events = await response.json();
+      eventsBox.innerHTML = "";
+      if (!events.length) {
+        eventsBox.innerHTML = `<div class="meta">Мероприятий пока нет.</div>`;
+        return;
+      }
+      for (const item of events) {
+        const card = document.createElement("article");
+        card.className = "card";
+        card.innerHTML = `
+          <div class="title">#${item.id} ${escapeHtml(item.title)}</div>
+          <div class="meta">
+            Дата: ${new Date(item.starts_at).toLocaleString("ru-RU")}<br>
+            Всего мест: ${item.capacity}; свободно: ${item.free_seats}<br>
+            Ожидают оплаты: ${item.pending_bookings}; подтверждено: ${item.confirmed_bookings}
+          </div>
+        `;
+        eventsBox.appendChild(card);
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    loadEvents();
+    setInterval(loadEvents, 5000);
+  </script>
+</body>
+</html>

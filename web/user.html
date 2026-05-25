@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EventBooker</title>
+  <style>
+    body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #f5f7fb; color: #10213d; }
+    main { width: min(1080px, calc(100% - 32px)); margin: 28px auto; }
+    h1 { margin: 0 0 18px; font-size: 32px; }
+    a { color: #2563eb; font-weight: 700; }
+    .panel { background: white; border: 1px solid #dbe3ef; border-radius: 8px; padding: 20px; margin-bottom: 18px; }
+    .user { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; align-items: end; }
+    label { display: grid; gap: 6px; color: #5d6d87; font-size: 14px; }
+    input { border: 1px solid #cbd7e8; border-radius: 6px; padding: 10px; font-size: 15px; }
+    button { border: 0; border-radius: 6px; padding: 10px 14px; color: white; background: #2563eb; font-weight: 700; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    button.secondary { background: #e8eef8; color: #10213d; }
+    .cards { display: grid; gap: 12px; }
+    .card { border: 1px solid #dbe3ef; border-radius: 8px; padding: 14px; }
+    .title { font-weight: 800; font-size: 18px; margin-bottom: 6px; }
+    .meta { color: #5d6d87; line-height: 1.5; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .booking { border-left: 3px solid #dbe3ef; padding-left: 10px; margin-top: 8px; color: #5d6d87; }
+    .pending { border-color: #f59e0b; }
+    .confirmed { border-color: #16a34a; }
+    .cancelled { border-color: #dc2626; }
+    .message { min-height: 22px; color: #5d6d87; margin-top: 10px; }
+    @media (max-width: 760px) { .user { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>EventBooker</h1>
+    <p><a href="/admin">Открыть admin-страницу</a></p>
+
+    <section class="panel">
+      <div class="user">
+        <label>Имя
+          <input id="userName" value="Кирилл Бережной">
+        </label>
+        <label>Email
+          <input id="userEmail" value="kirill@example.com">
+        </label>
+        <label>Telegram
+          <input id="userTelegram" placeholder="chat id или @channel">
+        </label>
+        <button id="refresh" type="button">Обновить</button>
+      </div>
+      <div id="message" class="message"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Мероприятия</h2>
+      <div id="events" class="cards"></div>
+    </section>
+  </main>
+
+  <script>
+    const eventsBox = document.querySelector("#events");
+    const message = document.querySelector("#message");
+
+    document.querySelector("#refresh").addEventListener("click", loadEvents);
+
+    eventsBox.addEventListener("click", async (event) => {
+      const bookBtn = event.target.closest("[data-book]");
+      const confirmBtn = event.target.closest("[data-confirm]");
+      if (bookBtn) {
+        await bookEvent(bookBtn.dataset.book);
+      }
+      if (confirmBtn) {
+        await confirmBooking(confirmBtn.dataset.event, confirmBtn.dataset.confirm);
+      }
+    });
+
+    async function bookEvent(eventID) {
+      const response = await fetch(`/events/${eventID}/book`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_name: document.querySelector("#userName").value,
+          user_email: document.querySelector("#userEmail").value,
+          user_telegram: document.querySelector("#userTelegram").value
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        message.textContent = body.error || "Не удалось забронировать место.";
+        return;
+      }
+      message.textContent = `Бронь #${body.id} создана. Подтвердите ее до ${new Date(body.expires_at).toLocaleTimeString("ru-RU")}.`;
+      await loadEvents();
+    }
+
+    async function confirmBooking(eventID, bookingID) {
+      const response = await fetch(`/events/${eventID}/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ booking_id: Number(bookingID) })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        message.textContent = body.error || "Не удалось подтвердить бронь.";
+        return;
+      }
+      message.textContent = `Бронь #${body.id} подтверждена.`;
+      await loadEvents();
+    }
+
+    async function loadEvents() {
+      const listResponse = await fetch("/events", { cache: "no-store" });
+      const list = await listResponse.json();
+      eventsBox.innerHTML = "";
+      if (!list.length) {
+        eventsBox.innerHTML = `<div class="meta">Мероприятий пока нет. Создайте их в admin-разделе.</div>`;
+        return;
+      }
+      for (const summary of list) {
+        const detailResponse = await fetch(`/events/${summary.id}`, { cache: "no-store" });
+        const item = await detailResponse.json();
+        const card = document.createElement("article");
+        card.className = "card";
+        card.innerHTML = `
+          <div class="title">#${item.id} ${escapeHtml(item.title)}</div>
+          <div class="meta">
+            Дата: ${new Date(item.starts_at).toLocaleString("ru-RU")}<br>
+            Свободно мест: ${item.free_seats} из ${item.capacity}<br>
+            Ожидают оплаты: ${item.pending_bookings}; подтверждено: ${item.confirmed_bookings}
+          </div>
+          <div class="actions">
+            <button type="button" data-book="${item.id}" ${item.free_seats <= 0 ? "disabled" : ""}>Забронировать</button>
+          </div>
+          ${renderBookings(item)}
+        `;
+        eventsBox.appendChild(card);
+      }
+    }
+
+    function renderBookings(item) {
+      if (!item.bookings || !item.bookings.length) {
+        return `<div class="meta">Броней пока нет.</div>`;
+      }
+      return item.bookings.map((booking) => `
+        <div class="booking ${booking.status}">
+          #${booking.id} ${escapeHtml(booking.user_name)} — ${statusText(booking.status)}
+          ${booking.user_telegram ? `; TG: ${escapeHtml(booking.user_telegram)}` : ""}
+          ${booking.status === "pending" ? `до ${new Date(booking.expires_at).toLocaleTimeString("ru-RU")}` : ""}
+          ${booking.status === "pending" ? `<button class="secondary" type="button" data-event="${item.id}" data-confirm="${booking.id}">Подтвердить</button>` : ""}
+        </div>
+      `).join("");
+    }
+
+    function statusText(status) {
+      switch (status) {
+        case "pending": return "ожидает оплаты";
+        case "confirmed": return "подтверждена";
+        case "cancelled": return "отменена";
+        default: return status;
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    loadEvents();
+    setInterval(loadEvents, 5000);
+  </script>
+</body>
+</html>
