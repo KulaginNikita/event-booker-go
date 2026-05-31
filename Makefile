@@ -1,7 +1,7 @@
 .PHONY: run test vet tidy compose-up compose-down
 
 run:
-	go run ./cmd/eventbooker -config config/config.yml
+	go run ./cmd/eventbooker
 
 test:
 	go test ./...

@@ -28,6 +28,14 @@ func NewEventRepository(pg *pgxdriver.Postgres, log logger.Logger) (*EventReposi
 	return &EventRepository{pg: pg, tm: tm}, nil
 }
 
+func (r *EventRepository) Ping(ctx context.Context) error {
+	var one int
+	if err := r.pg.QueryRow(ctx, `SELECT 1`).Scan(&one); err != nil {
+		return fmt.Errorf("ping postgres: %w", err)
+	}
+	return nil
+}
+
 func (r *EventRepository) CreateEvent(ctx context.Context, event *domain.Event) error {
 	sql, args, err := r.pg.Insert("events").
 		Columns("title", "starts_at", "capacity").

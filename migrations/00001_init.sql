@@ -1,3 +1,5 @@
+-- +goose Up
+-- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS events (
     id BIGSERIAL PRIMARY KEY,
     title TEXT NOT NULL CHECK (length(trim(title)) > 0),
@@ -21,3 +23,10 @@ CREATE TABLE IF NOT EXISTS bookings (
 
 CREATE INDEX IF NOT EXISTS idx_bookings_event_status ON bookings(event_id, status);
 CREATE INDEX IF NOT EXISTS idx_bookings_expiration ON bookings(status, expires_at);
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+DROP TABLE IF EXISTS bookings;
+DROP TABLE IF EXISTS events;
+-- +goose StatementEnd

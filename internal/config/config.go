@@ -3,123 +3,128 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
-	wbfconfig "github.com/wb-go/wbf/config"
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	App       AppConfig       `mapstructure:"app"`
-	HTTP      HTTPConfig      `mapstructure:"http"`
-	Postgres  PostgresConfig  `mapstructure:"postgres"`
-	Booking   BookingConfig   `mapstructure:"booking"`
-	Scheduler SchedulerConfig `mapstructure:"scheduler"`
-	Email     EmailConfig     `mapstructure:"email"`
-	Telegram  TelegramConfig  `mapstructure:"telegram"`
-	Logger    LoggerConfig    `mapstructure:"logger"`
+	App       AppConfig
+	HTTP      HTTPConfig
+	Postgres  PostgresConfig
+	Migration MigrationConfig
+	Booking   BookingConfig
+	Scheduler SchedulerConfig
+	Email     EmailConfig
+	Telegram  TelegramConfig
+	Logger    LoggerConfig
 }
 
 type AppConfig struct {
-	Name string `mapstructure:"name"`
-	Env  string `mapstructure:"env"`
+	Name string
+	Env  string
 }
 
 type HTTPConfig struct {
-	Port string `mapstructure:"port"`
+	Port              string
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+	ShutdownTimeout   time.Duration
 }
 
 type PostgresConfig struct {
-	DSN         string `mapstructure:"dsn"`
-	MaxPoolSize int32  `mapstructure:"max_pool_size"`
+	DSN         string
+	MaxPoolSize int32
+}
+
+type MigrationConfig struct {
+	Dir string
 }
 
 type BookingConfig struct {
-	PaymentDeadline time.Duration `mapstructure:"payment_deadline"`
+	PaymentDeadline time.Duration
 }
 
 type SchedulerConfig struct {
-	Interval time.Duration `mapstructure:"interval"`
+	Interval time.Duration
 }
 
 type EmailConfig struct {
-	Enabled  bool   `mapstructure:"enabled"`
-	SMTPHost string `mapstructure:"smtp_host"`
-	SMTPPort int    `mapstructure:"smtp_port"`
-	Username string `mapstructure:"username"`
-	Password string `mapstructure:"password"`
-	From     string `mapstructure:"from"`
+	Enabled  bool
+	SMTPHost string
+	SMTPPort int
+	Username string
+	Password string
+	From     string
 }
 
 type TelegramConfig struct {
-	Enabled bool   `mapstructure:"enabled"`
-	Token   string `mapstructure:"token"`
+	Enabled bool
+	Token   string
 }
 
 type LoggerConfig struct {
-	Level  string `mapstructure:"level"`
-	Format string `mapstructure:"format"`
+	Level  string
+	Format string
 }
 
-func Load(path string) (*Config, error) {
-	cfg := wbfconfig.New()
-	if err := cfg.LoadConfigFiles(path); err != nil {
-		return nil, fmt.Errorf("load config file: %w", err)
-	}
-	cfg.EnableEnv("APP")
+func Load() (*Config, error) {
+	_ = godotenv.Load(".env")
 
-	var c Config
-	if err := cfg.Unmarshal(&c); err != nil {
-		return nil, fmt.Errorf("unmarshal config: %w", err)
-	}
-
-	if c.App.Name == "" {
-		c.App.Name = "event-booker"
-	}
-	if c.App.Env == "" {
-		c.App.Env = "local"
-	}
-	if c.HTTP.Port == "" {
-		c.HTTP.Port = "8080"
-	}
-	if c.Postgres.MaxPoolSize == 0 {
-		c.Postgres.MaxPoolSize = 10
-	}
-	if c.Booking.PaymentDeadline == 0 {
-		c.Booking.PaymentDeadline = 2 * time.Minute
-	}
-	if c.Scheduler.Interval == 0 {
-		c.Scheduler.Interval = 10 * time.Second
-	}
-	applyNotificationEnv(&c)
-	if c.Email.SMTPHost == "" {
-		c.Email.SMTPHost = "smtp.gmail.com"
-	}
-	if c.Email.SMTPPort == 0 {
-		c.Email.SMTPPort = 587
+	c := Config{
+		App: AppConfig{
+			Name: envString("APP_NAME", "event-booker"),
+			Env:  envString("APP_ENV", "local"),
+		},
+		HTTP: HTTPConfig{
+			Port:              envString("APP_HTTP_PORT", "8080"),
+			ReadHeaderTimeout: envDuration("APP_HTTP_READ_HEADER_TIMEOUT", 5*time.Second),
+			ReadTimeout:       envDuration("APP_HTTP_READ_TIMEOUT", 10*time.Second),
+			WriteTimeout:      envDuration("APP_HTTP_WRITE_TIMEOUT", 10*time.Second),
+			IdleTimeout:       envDuration("APP_HTTP_IDLE_TIMEOUT", 60*time.Second),
+			ShutdownTimeout:   envDuration("APP_HTTP_SHUTDOWN_TIMEOUT", 10*time.Second),
+		},
+		Postgres: PostgresConfig{
+			DSN:         envString("APP_POSTGRES_DSN", ""),
+			MaxPoolSize: int32Env("APP_POSTGRES_MAX_POOL_SIZE", 10),
+		},
+		Migration: MigrationConfig{
+			Dir: envString("APP_MIGRATION_DIR", "migrations"),
+		},
+		Booking: BookingConfig{
+			PaymentDeadline: envDuration("APP_BOOKING_PAYMENT_DEADLINE", 2*time.Minute),
+		},
+		Scheduler: SchedulerConfig{
+			Interval: envDuration("APP_SCHEDULER_INTERVAL", 10*time.Second),
+		},
+		Email: EmailConfig{
+			Enabled:  envBool("EMAIL_ENABLED", false),
+			SMTPHost: envString("EMAIL_SMTP_HOST", "smtp.gmail.com"),
+			SMTPPort: envInt("EMAIL_SMTP_PORT", 587),
+			Username: envString("EMAIL_USERNAME", ""),
+			Password: envString("EMAIL_PASSWORD", ""),
+			From:     envString("EMAIL_FROM", ""),
+		},
+		Telegram: TelegramConfig{
+			Enabled: envBool("TG_ENABLED", false),
+			Token:   envString("TG_TOKEN", ""),
+		},
+		Logger: LoggerConfig{
+			Level:  envString("APP_LOGGER_LEVEL", "info"),
+			Format: envString("APP_LOGGER_FORMAT", "console"),
+		},
 	}
 	if c.Email.From == "" {
 		c.Email.From = c.Email.Username
 	}
-	if c.Logger.Level == "" {
-		c.Logger.Level = "info"
-	}
-	if c.Logger.Format == "" {
-		c.Logger.Format = "console"
+	if c.Postgres.DSN == "" {
+		return nil, fmt.Errorf("APP_POSTGRES_DSN is required")
 	}
 
 	return &c, nil
-}
-
-func applyNotificationEnv(c *Config) {
-	c.Email.Enabled = envBool("EMAIL_ENABLED", c.Email.Enabled)
-	c.Email.SMTPHost = envString("EMAIL_SMTP_HOST", c.Email.SMTPHost)
-	c.Email.SMTPPort = envInt("EMAIL_SMTP_PORT", c.Email.SMTPPort)
-	c.Email.Username = envString("EMAIL_USERNAME", c.Email.Username)
-	c.Email.Password = envString("EMAIL_PASSWORD", c.Email.Password)
-	c.Email.From = envString("EMAIL_FROM", c.Email.From)
-
-	c.Telegram.Enabled = envBool("TG_ENABLED", c.Telegram.Enabled)
-	c.Telegram.Token = envString("TG_TOKEN", c.Telegram.Token)
 }
 
 func envString(key string, fallback string) string {
@@ -149,8 +154,32 @@ func envInt(key string, fallback int) int {
 	if value == "" {
 		return fallback
 	}
-	var parsed int
-	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func int32Env(key string, fallback int32) int32 {
+	value := envString(key, "")
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	if err != nil {
+		return fallback
+	}
+	return int32(parsed)
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	value := envString(key, "")
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
 		return fallback
 	}
 	return parsed

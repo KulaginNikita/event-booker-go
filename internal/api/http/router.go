@@ -12,9 +12,9 @@ func NewRouter(handler *Handler) *ginext.Engine {
 	engine.GET("/admin", func(c *ginext.Context) {
 		c.File("web/admin.html")
 	})
-	engine.GET("/healthz", func(c *ginext.Context) {
-		c.String(200, "ok")
-	})
+	engine.GET("/healthz", handler.Live)
+	engine.GET("/livez", handler.Live)
+	engine.GET("/readyz", handler.Ready)
 
 	engine.POST("/events", handler.CreateEvent)
 	engine.GET("/events", handler.ListEvents)

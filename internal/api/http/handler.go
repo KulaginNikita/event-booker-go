@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/wb-go/wbf/ginext"
 	"github.com/wb-go/wbf/logger"
@@ -21,13 +22,34 @@ type EventService interface {
 	Confirm(ctx context.Context, in service.ConfirmInput) (*domain.Booking, error)
 }
 
+type HealthService interface {
+	Ready(ctx context.Context) error
+}
+
 type Handler struct {
 	service EventService
+	health  HealthService
 	logger  logger.Logger
 }
 
-func NewHandler(service EventService, log logger.Logger) *Handler {
-	return &Handler{service: service, logger: log}
+func NewHandler(service EventService, health HealthService, log logger.Logger) *Handler {
+	return &Handler{service: service, health: health, logger: log}
+}
+
+func (h *Handler) Live(c *ginext.Context) {
+	c.JSON(http.StatusOK, ginext.H{"status": "ok"})
+}
+
+func (h *Handler) Ready(c *ginext.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := h.health.Ready(ctx); err != nil {
+		h.logger.Error("readiness check failed", "error", err)
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{Error: "service is not ready"})
+		return
+	}
+	c.JSON(http.StatusOK, ginext.H{"status": "ok"})
 }
 
 func (h *Handler) CreateEvent(c *ginext.Context) {

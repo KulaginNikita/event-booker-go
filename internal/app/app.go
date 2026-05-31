@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/wb-go/wbf/logger"
 
@@ -13,8 +12,8 @@ import (
 	pkglogger "github.com/KulaginNikita/event-booker/pkg/logger"
 )
 
-func Run(configPath string) error {
-	cfg, err := config.Load(configPath)
+func Run() error {
+	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -43,13 +42,17 @@ func Run(configPath string) error {
 	go container.Scheduler.Run(schedulerCtx)
 
 	srv := &http.Server{
-		Addr:         ":" + cfg.HTTP.Port,
-		Handler:      container.Router,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Addr:              ":" + cfg.HTTP.Port,
+		Handler:           container.Router,
+		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
+		ReadTimeout:       cfg.HTTP.ReadTimeout,
+		WriteTimeout:      cfg.HTTP.WriteTimeout,
+		IdleTimeout:       cfg.HTTP.IdleTimeout,
 	}
 	container.Closer.Add("http-server", func(ctx context.Context) error {
-		return srv.Shutdown(ctx)
+		shutdownCtx, cancel := context.WithTimeout(ctx, cfg.HTTP.ShutdownTimeout)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
 	})
 
 	go func() {
@@ -59,5 +62,5 @@ func Run(configPath string) error {
 		}
 	}()
 
-	return container.Closer.WaitAndClose(10 * time.Second)
+	return container.Closer.WaitAndClose(cfg.HTTP.ShutdownTimeout)
 }

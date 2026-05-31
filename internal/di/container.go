@@ -2,8 +2,10 @@ package di
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	pgxdriver "github.com/wb-go/wbf/dbpg/pgx-driver"
 	"github.com/wb-go/wbf/ginext"
 	"github.com/wb-go/wbf/logger"
@@ -11,6 +13,7 @@ import (
 
 	httpapi "github.com/KulaginNikita/event-booker/internal/api/http"
 	"github.com/KulaginNikita/event-booker/internal/config"
+	"github.com/KulaginNikita/event-booker/internal/migrator"
 	"github.com/KulaginNikita/event-booker/internal/notifier"
 	pgrepo "github.com/KulaginNikita/event-booker/internal/repository/postgres"
 	"github.com/KulaginNikita/event-booker/internal/scheduler"
@@ -27,6 +30,7 @@ type Container struct {
 	Repo      *pgrepo.EventRepository
 	Notifier  *notifier.MultiNotifier
 	Service   *service.EventService
+	Health    *service.HealthService
 	Scheduler *scheduler.Scheduler
 	Handler   *httpapi.Handler
 	Router    *ginext.Engine
@@ -54,6 +58,10 @@ func NewContainer(_ context.Context, cfg *config.Config, log logger.Logger, zapL
 }
 
 func (c *Container) initPostgres() error {
+	if err := c.runMigrations(); err != nil {
+		return err
+	}
+
 	pg, err := pgxdriver.New(
 		c.Config.Postgres.DSN,
 		c.Logger,
@@ -69,6 +77,19 @@ func (c *Container) initPostgres() error {
 		pg.Close()
 		return nil
 	})
+	return nil
+}
+
+func (c *Container) runMigrations() error {
+	db, err := sql.Open("pgx", c.Config.Postgres.DSN)
+	if err != nil {
+		return fmt.Errorf("open migration db: %w", err)
+	}
+	defer db.Close()
+
+	if err := migrator.NewMigrator(db, c.Config.Migration.Dir).Up(); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
 	return nil
 }
 
@@ -89,6 +110,7 @@ func (c *Container) initServices() {
 	}
 	c.Notifier = notifier.NewMulti(c.Logger, notifier.NewLogNotifier(c.Logger), emailNotifier, telegramNotifier)
 	c.Service = service.NewEventService(c.Repo, c.Notifier, c.Config.Booking.PaymentDeadline, c.Logger)
+	c.Health = service.NewHealthService(c.Repo)
 }
 
 func (c *Container) initScheduler() {
@@ -96,6 +118,6 @@ func (c *Container) initScheduler() {
 }
 
 func (c *Container) initHTTP() {
-	c.Handler = httpapi.NewHandler(c.Service, c.Logger)
+	c.Handler = httpapi.NewHandler(c.Service, c.Health, c.Logger)
 	c.Router = httpapi.NewRouter(c.Handler)
 }

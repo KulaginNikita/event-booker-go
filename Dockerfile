@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25.7-alpine AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -10,8 +10,8 @@ FROM alpine:3.20
 
 WORKDIR /app
 COPY --from=builder /bin/event-booker /bin/event-booker
-COPY config ./config
 COPY web ./web
+COPY migrations ./migrations
 
 EXPOSE 8080
-CMD ["/bin/event-booker", "-config", "config/config.yml"]
+CMD ["/bin/event-booker"]
