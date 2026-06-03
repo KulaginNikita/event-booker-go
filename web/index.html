@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EventBooker</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #111a2e;
+      --panel-2: #17223a;
+      --text: #e7edf8;
+      --muted: #91a1bd;
+      --line: #263754;
+      --blue: #3b82f6;
+      --blue-hover: #2563eb;
+      --green: #22c55e;
+      --yellow: #f59e0b;
+      --red: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 28px auto; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    h2 { margin: 0; font-size: 24px; }
+    .muted, .meta { color: var(--muted); line-height: 1.5; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 18px;
+    }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; align-items: end; }
+    .login-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: #0d1628;
+      color: var(--text);
+      font-size: 15px;
+    }
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 11px 16px;
+      color: white;
+      background: var(--blue);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: var(--blue-hover); }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    button.secondary { background: #22314f; color: var(--text); }
+    button.secondary:hover { background: #2b3e63; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .cards { display: grid; gap: 12px; }
+    .card {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .title { font-weight: 800; font-size: 18px; margin-bottom: 6px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .booking {
+      border-left: 3px solid var(--line);
+      padding: 10px 0 10px 10px;
+      margin-top: 10px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, .02);
+    }
+    .booking.pending { border-color: var(--yellow); }
+    .booking.confirmed { border-color: var(--green); }
+    .booking.cancelled { border-color: var(--red); }
+    .message { min-height: 22px; color: var(--muted); margin-top: 10px; }
+    .hidden { display: none !important; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    @media (max-width: 760px) {
+      .grid, .login-grid { grid-template-columns: 1fr; }
+      .toolbar { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>EventBooker</h1>
+    <p class="muted">Войдите как администратор или пользователь. Роль определяется сервером по учетной записи.</p>
+
+    <section id="loginPanel" class="panel">
+      <div class="login-grid">
+        <label>Логин
+          <input id="loginUsername" autocomplete="username" value="user">
+        </label>
+        <label>Пароль
+          <input id="loginPassword" type="password" autocomplete="current-password" value="user123">
+        </label>
+        <button id="loginBtn" type="button">Войти</button>
+      </div>
+      <div class="message" id="loginMessage">Для демо: user/user123 или admin/admin123.</div>
+    </section>
+
+    <section id="sessionPanel" class="panel hidden">
+      <div class="toolbar">
+        <div>
+          <h2 id="screenTitle">Мероприятия</h2>
+          <div class="meta">Вы вошли как <span id="currentUser"></span> <span id="currentRole" class="badge"></span></div>
+        </div>
+        <div class="actions">
+          <button id="refresh" type="button" class="secondary">Обновить</button>
+          <button id="logout" type="button" class="secondary">Выйти</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="adminPanel" class="panel hidden">
+      <form id="eventForm" class="grid">
+        <label>Название
+          <input id="title" required placeholder="Go workshop">
+        </label>
+        <label>Дата
+          <input id="startsAt" type="datetime-local" required>
+        </label>
+        <label>Мест
+          <input id="capacity" type="number" min="1" value="10" required>
+        </label>
+        <button type="submit">Создать</button>
+      </form>
+      <div id="adminMessage" class="message"></div>
+    </section>
+
+    <section id="userPanel" class="panel hidden">
+      <div class="grid">
+        <label>Имя для брони
+          <input id="userName" value="Кирилл Бережной">
+        </label>
+        <label>Email
+          <input id="userEmail" value="kirill@example.com">
+        </label>
+        <label>Telegram
+          <input id="userTelegram" placeholder="@username">
+        </label>
+        <span></span>
+      </div>
+      <div id="userMessage" class="message"></div>
+    </section>
+
+    <section id="eventsPanel" class="panel hidden">
+      <div class="toolbar">
+        <h2>Список мероприятий</h2>
+        <span id="pollStatus" class="meta"></span>
+      </div>
+      <div id="events" class="cards"></div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      token: localStorage.getItem("eventBookerToken") || "",
+      username: localStorage.getItem("eventBookerUsername") || "",
+      role: localStorage.getItem("eventBookerRole") || "",
+      loading: false,
+      pollTimer: null,
+      cards: new Map()
+    };
+
+    const eventsBox = document.querySelector("#events");
+    const loginMessage = document.querySelector("#loginMessage");
+    const adminMessage = document.querySelector("#adminMessage");
+    const userMessage = document.querySelector("#userMessage");
+    const pollStatus = document.querySelector("#pollStatus");
+
+    document.querySelector("#loginBtn").addEventListener("click", login);
+    document.querySelector("#logout").addEventListener("click", logout);
+    document.querySelector("#refresh").addEventListener("click", () => loadEvents({ force: true }));
+    document.querySelector("#eventForm").addEventListener("submit", createEvent);
+
+    eventsBox.addEventListener("click", async (event) => {
+      const bookBtn = event.target.closest("[data-book]");
+      const confirmBtn = event.target.closest("[data-confirm]");
+      if (bookBtn) await bookEvent(bookBtn.dataset.book);
+      if (confirmBtn) await confirmBooking(confirmBtn.dataset.event, confirmBtn.dataset.confirm);
+    });
+
+    async function login() {
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.querySelector("#loginUsername").value,
+          password: document.querySelector("#loginPassword").value
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        loginMessage.textContent = body.error || "Не удалось войти.";
+        return;
+      }
+
+      state.token = body.token;
+      state.username = body.username;
+      state.role = body.role;
+      localStorage.setItem("eventBookerToken", state.token);
+      localStorage.setItem("eventBookerUsername", state.username);
+      localStorage.setItem("eventBookerRole", state.role);
+      renderSession();
+      await loadEvents({ force: true });
+    }
+
+    function logout() {
+      state.token = "";
+      state.username = "";
+      state.role = "";
+      localStorage.removeItem("eventBookerToken");
+      localStorage.removeItem("eventBookerUsername");
+      localStorage.removeItem("eventBookerRole");
+      stopPolling();
+      state.cards.clear();
+      eventsBox.innerHTML = "";
+      renderSession();
+    }
+
+    async function createEvent(event) {
+      event.preventDefault();
+      const startsAt = new Date(document.querySelector("#startsAt").value);
+      const response = await fetch("/events", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          title: document.querySelector("#title").value,
+          starts_at: startsAt.toISOString(),
+          capacity: Number(document.querySelector("#capacity").value)
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        adminMessage.textContent = body.error || "Не удалось создать мероприятие.";
+        return;
+      }
+      document.querySelector("#eventForm").reset();
+      document.querySelector("#capacity").value = 10;
+      adminMessage.textContent = "Мероприятие создано.";
+      await loadEvents({ force: true });
+    }
+
+    async function bookEvent(eventID) {
+      const response = await fetch(`/events/${eventID}/book`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          user_name: document.querySelector("#userName").value,
+          user_email: document.querySelector("#userEmail").value,
+          user_telegram: document.querySelector("#userTelegram").value
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        userMessage.textContent = body.error || "Не удалось забронировать место.";
+        return;
+      }
+      userMessage.textContent = `Бронь #${body.id} создана. Подтвердите ее до ${new Date(body.expires_at).toLocaleTimeString("ru-RU")}.`;
+      await loadEvents({ force: true });
+    }
+
+    async function confirmBooking(eventID, bookingID) {
+      const response = await fetch(`/events/${eventID}/confirm`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ booking_id: Number(bookingID) })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        userMessage.textContent = body.error || "Не удалось подтвердить бронь.";
+        return;
+      }
+      userMessage.textContent = `Бронь #${body.id} подтверждена.`;
+      await loadEvents({ force: true });
+    }
+
+    async function loadEvents({ force = false } = {}) {
+      if (!state.token || state.loading) return;
+      state.loading = true;
+      try {
+        const listResponse = await fetch("/events?limit=100&sort=starts_at", { cache: "no-store" });
+        const list = await listResponse.json();
+        const details = [];
+        for (const summary of list) {
+          const detailResponse = await fetch(`/events/${summary.id}`, { cache: "no-store" });
+          details.push(await detailResponse.json());
+        }
+        renderEvents(details, force);
+        syncPolling(details);
+      } catch {
+        userMessage.textContent = "Не удалось загрузить список мероприятий.";
+      } finally {
+        state.loading = false;
+      }
+    }
+
+    function renderSession() {
+      const loggedIn = Boolean(state.token);
+      toggle("#loginPanel", !loggedIn);
+      toggle("#sessionPanel", loggedIn);
+      toggle("#eventsPanel", loggedIn);
+      toggle("#adminPanel", loggedIn && state.role === "admin");
+      toggle("#userPanel", loggedIn && state.role === "user");
+
+      if (!loggedIn) return;
+      document.querySelector("#currentUser").textContent = state.username;
+      document.querySelector("#currentRole").textContent = state.role === "admin" ? "администратор" : "пользователь";
+      document.querySelector("#screenTitle").textContent = state.role === "admin" ? "Панель администратора" : "Панель пользователя";
+    }
+
+    function renderEvents(events, force) {
+      if (!events.length) {
+        state.cards.clear();
+        eventsBox.innerHTML = `<div class="meta">Мероприятий пока нет.</div>`;
+        return;
+      }
+
+      if (eventsBox.querySelector(".meta:only-child")) eventsBox.innerHTML = "";
+
+      const actualIDs = new Set();
+      for (const item of events) {
+        actualIDs.add(item.id);
+        const fingerprint = JSON.stringify(item) + state.role;
+        let card = state.cards.get(item.id);
+        if (!card) {
+          card = document.createElement("article");
+          card.className = "card";
+          state.cards.set(item.id, card);
+          eventsBox.appendChild(card);
+        }
+        if (force || card.dataset.fingerprint !== fingerprint) {
+          card.dataset.fingerprint = fingerprint;
+          card.innerHTML = eventMarkup(item);
+        }
+      }
+
+      for (const [id, card] of state.cards) {
+        if (!actualIDs.has(id)) {
+          card.remove();
+          state.cards.delete(id);
+        }
+      }
+    }
+
+    function eventMarkup(item) {
+      return `
+        <div class="title">#${item.id} ${escapeHtml(item.title)}</div>
+        <div class="meta">
+          Дата: ${new Date(item.starts_at).toLocaleString("ru-RU")}<br>
+          Свободно мест: ${item.free_seats} из ${item.capacity}<br>
+          Ожидают подтверждения: ${item.pending_bookings}; подтверждено: ${item.confirmed_bookings}
+        </div>
+        ${state.role === "user" ? `
+          <div class="actions">
+            <button type="button" data-book="${item.id}" ${item.free_seats <= 0 ? "disabled" : ""}>Забронировать</button>
+          </div>` : ""}
+        ${renderBookings(item)}
+      `;
+    }
+
+    function renderBookings(item) {
+      if (!item.bookings || !item.bookings.length) {
+        return `<div class="meta">Броней пока нет.</div>`;
+      }
+      return item.bookings.map((booking) => `
+        <div class="booking ${booking.status}">
+          #${booking.id} ${escapeHtml(booking.user_name)} - ${statusText(booking.status)}
+          ${booking.user_telegram ? `; TG: ${escapeHtml(booking.user_telegram)}` : ""}
+          ${booking.status === "pending" ? ` до ${new Date(booking.expires_at).toLocaleTimeString("ru-RU")}` : ""}
+          ${state.role === "user" && booking.status === "pending" ? `<button class="secondary" type="button" data-event="${item.id}" data-confirm="${booking.id}">Подтвердить</button>` : ""}
+        </div>
+      `).join("");
+    }
+
+    function syncPolling(events) {
+      const hasPending = events.some((event) => event.pending_bookings > 0);
+      pollStatus.textContent = hasPending ? "Автообновление включено для pending-броней" : "";
+      if (hasPending && !state.pollTimer) {
+        state.pollTimer = setInterval(() => loadEvents(), 10000);
+      }
+      if (!hasPending) stopPolling();
+    }
+
+    function stopPolling() {
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        state.pollTimer = null;
+      }
+      pollStatus.textContent = "";
+    }
+
+    function statusText(status) {
+      switch (status) {
+        case "pending": return "ожидает подтверждения";
+        case "confirmed": return "подтверждена";
+        case "cancelled": return "отменена";
+        default: return status;
+      }
+    }
+
+    function authHeaders() {
+      return {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${state.token}`
+      };
+    }
+
+    function toggle(selector, visible) {
+      document.querySelector(selector).classList.toggle("hidden", !visible);
+    }
+
+    function escapeHtml(value) {
+      return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    renderSession();
+    loadEvents({ force: true });
+  </script>
+</body>
+</html>

@@ -7,10 +7,10 @@ func NewRouter(handler *Handler) *ginext.Engine {
 	engine.Use(ginext.Logger(), ginext.Recovery())
 
 	engine.GET("/", func(c *ginext.Context) {
-		c.File("web/user.html")
+		c.File("web/index.html")
 	})
 	engine.GET("/admin", func(c *ginext.Context) {
-		c.File("web/admin.html")
+		c.File("web/index.html")
 	})
 	engine.GET("/healthz", handler.Live)
 	engine.GET("/livez", handler.Live)

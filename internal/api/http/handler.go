@@ -23,7 +23,7 @@ type EventService interface {
 }
 
 type AuthService interface {
-	Login(username string, role string) (string, error)
+	Login(username string, password string) (string, error)
 	Parse(token string) (*service.Claims, error)
 }
 
@@ -65,12 +65,17 @@ func (h *Handler) Login(c *ginext.Context) {
 		return
 	}
 
-	token, err := h.auth.Login(req.Username, req.Role)
+	token, err := h.auth.Login(req.Username, req.Password)
 	if err != nil {
 		h.handleError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, LoginResponse{Token: token, Role: req.Role})
+	claims, err := h.auth.Parse(token)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, LoginResponse{Token: token, Username: claims.Subject, Role: claims.Role})
 }
 
 func (h *Handler) CreateEvent(c *ginext.Context) {

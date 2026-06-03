@@ -52,6 +52,7 @@ type BookingConfig struct {
 type AuthConfig struct {
 	JWTSecret string
 	TokenTTL  time.Duration
+	Users     string
 }
 
 type SchedulerConfig struct {
@@ -106,6 +107,7 @@ func Load() (*Config, error) {
 		Auth: AuthConfig{
 			JWTSecret: envString("APP_AUTH_JWT_SECRET", "local-dev-secret-change-me"),
 			TokenTTL:  envDuration("APP_AUTH_TOKEN_TTL", 12*time.Hour),
+			Users:     envString("APP_AUTH_USERS", "admin:admin123:admin,user:user123:user"),
 		},
 		Scheduler: SchedulerConfig{
 			Interval: envDuration("APP_SCHEDULER_INTERVAL", 10*time.Second),

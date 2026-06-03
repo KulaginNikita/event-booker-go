@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"strings"
 	"time"
@@ -16,8 +17,9 @@ const (
 )
 
 type AuthService struct {
-	secret []byte
-	ttl    time.Duration
+	secret   []byte
+	ttl      time.Duration
+	accounts map[string]Account
 }
 
 type Claims struct {
@@ -25,23 +27,34 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-func NewAuthService(secret string, ttl time.Duration) *AuthService {
+type Account struct {
+	Username string
+	Password string
+	Role     string
+}
+
+func NewAuthService(secret string, ttl time.Duration, users string) *AuthService {
 	if ttl <= 0 {
 		ttl = 12 * time.Hour
 	}
-	return &AuthService{secret: []byte(secret), ttl: ttl}
+	return &AuthService{
+		secret:   []byte(secret),
+		ttl:      ttl,
+		accounts: parseAccounts(users),
+	}
 }
 
-func (s *AuthService) Login(username string, role string) (string, error) {
+func (s *AuthService) Login(username string, password string) (string, error) {
 	username = strings.TrimSpace(username)
-	role = strings.TrimSpace(role)
-	if username == "" || !validRole(role) {
+	password = strings.TrimSpace(password)
+	account, ok := s.accounts[username]
+	if username == "" || password == "" || !ok || !sameSecret(account.Password, password) {
 		return "", domain.ErrUnauthorized
 	}
 
 	now := time.Now().UTC()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
-		Role: role,
+		Role: account.Role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -72,4 +85,28 @@ func (s *AuthService) Parse(tokenString string) (*Claims, error) {
 
 func validRole(role string) bool {
 	return role == RoleAdmin || role == RoleUser
+}
+
+func parseAccounts(raw string) map[string]Account {
+	accounts := make(map[string]Account)
+	for _, part := range strings.Split(raw, ",") {
+		fields := strings.Split(part, ":")
+		if len(fields) != 3 {
+			continue
+		}
+		account := Account{
+			Username: strings.TrimSpace(fields[0]),
+			Password: strings.TrimSpace(fields[1]),
+			Role:     strings.TrimSpace(fields[2]),
+		}
+		if account.Username == "" || account.Password == "" || !validRole(account.Role) {
+			continue
+		}
+		accounts[account.Username] = account
+	}
+	return accounts
+}
+
+func sameSecret(expected string, actual string) bool {
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(actual)) == 1
 }

@@ -118,7 +118,7 @@ func (c *Container) initServices() {
 	}
 	c.Notifier = notifier.NewMulti(c.Logger, notifier.NewLogNotifier(c.Logger), emailNotifier, telegramNotifier)
 	c.Service = service.NewEventService(c.Repo, c.Notifier, c.Config.Booking.PaymentDeadline, c.Logger)
-	c.Auth = service.NewAuthService(c.Config.Auth.JWTSecret, c.Config.Auth.TokenTTL)
+	c.Auth = service.NewAuthService(c.Config.Auth.JWTSecret, c.Config.Auth.TokenTTL, c.Config.Auth.Users)
 	c.Health = service.NewHealthService(c.Repo)
 }
 

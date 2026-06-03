@@ -9,9 +9,9 @@ import (
 )
 
 func TestAuthServiceLoginAndParse(t *testing.T) {
-	svc := NewAuthService("secret", time.Hour)
+	svc := NewAuthService("secret", time.Hour, "admin:password:admin,user:password:user")
 
-	token, err := svc.Login("admin", RoleAdmin)
+	token, err := svc.Login("admin", "password")
 	if err != nil {
 		t.Fatalf("login failed: %v", err)
 	}
@@ -25,10 +25,19 @@ func TestAuthServiceLoginAndParse(t *testing.T) {
 	}
 }
 
-func TestAuthServiceRejectsInvalidRole(t *testing.T) {
-	svc := NewAuthService("secret", time.Hour)
+func TestAuthServiceRejectsInvalidPassword(t *testing.T) {
+	svc := NewAuthService("secret", time.Hour, "admin:password:admin")
 
-	_, err := svc.Login("guest", "guest")
+	_, err := svc.Login("admin", "wrong")
+	if !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("expected unauthorized, got %v", err)
+	}
+}
+
+func TestAuthServiceRejectsUnknownUser(t *testing.T) {
+	svc := NewAuthService("secret", time.Hour, "admin:password:admin")
+
+	_, err := svc.Login("guest", "password")
 	if !errors.Is(err, domain.ErrUnauthorized) {
 		t.Fatalf("expected unauthorized, got %v", err)
 	}

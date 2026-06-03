@@ -16,11 +16,12 @@ func (h *Handler) RequireRole(roles ...string) ginext.HandlerFunc {
 	}
 
 	return func(c *ginext.Context) {
-		token := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
-		if token == "" {
+		header := strings.TrimSpace(c.GetHeader("Authorization"))
+		if !strings.HasPrefix(header, "Bearer ") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{Error: domain.ErrUnauthorized.Error()})
 			return
 		}
+		token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 
 		claims, err := h.auth.Parse(token)
 		if err != nil {
