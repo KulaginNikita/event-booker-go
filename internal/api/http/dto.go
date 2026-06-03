@@ -6,6 +6,16 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+type LoginRequest struct {
+	Username string `json:"username" binding:"required"`
+	Role     string `json:"role" binding:"required"`
+}
+
+type LoginResponse struct {
+	Token string `json:"token"`
+	Role  string `json:"role"`
+}
+
 type CreateEventRequest struct {
 	Title    string    `json:"title" binding:"required"`
 	StartsAt time.Time `json:"starts_at" binding:"required"`

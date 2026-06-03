@@ -128,6 +128,7 @@
     const message = document.querySelector("#message");
     const pollStatus = document.querySelector("#pollStatus");
     const cards = new Map();
+    let authToken = "";
     let pollTimer = null;
     let loading = false;
 
@@ -145,9 +146,10 @@
     });
 
     async function bookEvent(eventID) {
+      await ensureAuthToken();
       const response = await fetch(`/events/${eventID}/book`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({
           user_name: document.querySelector("#userName").value,
           user_email: document.querySelector("#userEmail").value,
@@ -164,9 +166,10 @@
     }
 
     async function confirmBooking(eventID, bookingID) {
+      await ensureAuthToken();
       const response = await fetch(`/events/${eventID}/confirm`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({ booking_id: Number(bookingID) })
       });
       const body = await response.json().catch(() => ({}));
@@ -182,7 +185,7 @@
       if (loading) return;
       loading = true;
       try {
-        const listResponse = await fetch("/events", { cache: "no-store" });
+        const listResponse = await fetch("/events?limit=100&sort=starts_at", { cache: "no-store" });
         const list = await listResponse.json();
         const details = [];
 
@@ -273,7 +276,7 @@
       pollStatus.textContent = hasPending ? "Автообновление включено для pending-броней" : "";
 
       if (hasPending && !pollTimer) {
-        pollTimer = setInterval(() => loadEvents(), 3000);
+        pollTimer = setInterval(() => loadEvents(), 10000);
       }
       if (!hasPending && pollTimer) {
         clearInterval(pollTimer);
@@ -292,6 +295,30 @@
 
     function escapeHtml(value) {
       return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    async function ensureAuthToken() {
+      if (authToken) return;
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.querySelector("#userName").value || "user",
+          role: "user"
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || "auth failed");
+      }
+      authToken = body.token;
+    }
+
+    function authHeaders() {
+      return {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`
+      };
     }
 
     loadEvents({ force: true });

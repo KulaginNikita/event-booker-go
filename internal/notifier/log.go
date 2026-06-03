@@ -16,6 +16,24 @@ func NewLogNotifier(log logger.Logger) *LogNotifier {
 	return &LogNotifier{log: log}
 }
 
+func (n *LogNotifier) BookingCreated(_ context.Context, booking domain.Booking) error {
+	n.log.Info("booking created notification",
+		"booking_id", booking.ID,
+		"event_id", booking.EventID,
+		"user_email", booking.UserEmail,
+	)
+	return nil
+}
+
+func (n *LogNotifier) BookingConfirmed(_ context.Context, booking domain.Booking) error {
+	n.log.Info("booking confirmed notification",
+		"booking_id", booking.ID,
+		"event_id", booking.EventID,
+		"user_email", booking.UserEmail,
+	)
+	return nil
+}
+
 func (n *LogNotifier) BookingCancelled(_ context.Context, booking domain.Booking) error {
 	n.log.Info("booking cancelled notification",
 		"booking_id", booking.ID,

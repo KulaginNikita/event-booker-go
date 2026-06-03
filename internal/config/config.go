@@ -15,6 +15,7 @@ type Config struct {
 	Postgres  PostgresConfig
 	Migration MigrationConfig
 	Booking   BookingConfig
+	Auth      AuthConfig
 	Scheduler SchedulerConfig
 	Email     EmailConfig
 	Telegram  TelegramConfig
@@ -46,6 +47,11 @@ type MigrationConfig struct {
 
 type BookingConfig struct {
 	PaymentDeadline time.Duration
+}
+
+type AuthConfig struct {
+	JWTSecret string
+	TokenTTL  time.Duration
 }
 
 type SchedulerConfig struct {
@@ -96,6 +102,10 @@ func Load() (*Config, error) {
 		},
 		Booking: BookingConfig{
 			PaymentDeadline: envDuration("APP_BOOKING_PAYMENT_DEADLINE", 2*time.Minute),
+		},
+		Auth: AuthConfig{
+			JWTSecret: envString("APP_AUTH_JWT_SECRET", "local-dev-secret-change-me"),
+			TokenTTL:  envDuration("APP_AUTH_TOKEN_TTL", 12*time.Hour),
 		},
 		Scheduler: SchedulerConfig{
 			Interval: envDuration("APP_SCHEDULER_INTERVAL", 10*time.Second),

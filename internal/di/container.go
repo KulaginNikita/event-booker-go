@@ -22,6 +22,7 @@ import (
 )
 
 type Container struct {
+	ctx       context.Context
 	Config    *config.Config
 	Logger    logger.Logger
 	ZapLogger *zap.Logger
@@ -30,19 +31,26 @@ type Container struct {
 	Repo      *pgrepo.EventRepository
 	Notifier  *notifier.MultiNotifier
 	Service   *service.EventService
+	Auth      *service.AuthService
 	Health    *service.HealthService
 	Scheduler *scheduler.Scheduler
 	Handler   *httpapi.Handler
 	Router    *ginext.Engine
 }
 
-func NewContainer(_ context.Context, cfg *config.Config, log logger.Logger, zapLog *zap.Logger) (*Container, error) {
+func NewContainer(parentCtx context.Context, cfg *config.Config, log logger.Logger, zapLog *zap.Logger) (*Container, error) {
+	ctx, cancelTelegram := context.WithCancel(parentCtx)
 	c := &Container{
+		ctx:       ctx,
 		Config:    cfg,
 		Logger:    log,
 		ZapLogger: zapLog,
 		Closer:    closer.New(zapLog),
 	}
+	c.Closer.Add("telegram-listener", func(_ context.Context) error {
+		cancelTelegram()
+		return nil
+	})
 
 	if err := c.initPostgres(); err != nil {
 		return nil, fmt.Errorf("init postgres: %w", err)
@@ -104,12 +112,13 @@ func (c *Container) initRepositories() error {
 
 func (c *Container) initServices() {
 	emailNotifier := notifier.NewEmail(c.Config.Email)
-	telegramNotifier, err := notifier.NewTelegram(c.Config.Telegram)
+	telegramNotifier, err := notifier.NewTelegram(c.ctx, c.Config.Telegram, c.Repo, c.Logger)
 	if err != nil {
 		c.Logger.Error("telegram notifier disabled", "error", err)
 	}
 	c.Notifier = notifier.NewMulti(c.Logger, notifier.NewLogNotifier(c.Logger), emailNotifier, telegramNotifier)
 	c.Service = service.NewEventService(c.Repo, c.Notifier, c.Config.Booking.PaymentDeadline, c.Logger)
+	c.Auth = service.NewAuthService(c.Config.Auth.JWTSecret, c.Config.Auth.TokenTTL)
 	c.Health = service.NewHealthService(c.Repo)
 }
 
@@ -118,6 +127,6 @@ func (c *Container) initScheduler() {
 }
 
 func (c *Container) initHTTP() {
-	c.Handler = httpapi.NewHandler(c.Service, c.Health, c.Logger)
+	c.Handler = httpapi.NewHandler(c.Service, c.Auth, c.Health, c.Logger)
 	c.Router = httpapi.NewRouter(c.Handler)
 }

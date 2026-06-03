@@ -16,10 +16,15 @@ import (
 
 type EventService interface {
 	CreateEvent(ctx context.Context, in service.CreateEventInput) (*domain.Event, error)
-	ListEvents(ctx context.Context) ([]domain.Event, error)
+	ListEvents(ctx context.Context, in service.ListEventsInput) ([]domain.Event, error)
 	GetEvent(ctx context.Context, id int64) (*domain.Event, error)
 	Book(ctx context.Context, in service.BookInput) (*domain.Booking, error)
 	Confirm(ctx context.Context, in service.ConfirmInput) (*domain.Booking, error)
+}
+
+type AuthService interface {
+	Login(username string, role string) (string, error)
+	Parse(token string) (*service.Claims, error)
 }
 
 type HealthService interface {
@@ -28,12 +33,13 @@ type HealthService interface {
 
 type Handler struct {
 	service EventService
+	auth    AuthService
 	health  HealthService
 	logger  logger.Logger
 }
 
-func NewHandler(service EventService, health HealthService, log logger.Logger) *Handler {
-	return &Handler{service: service, health: health, logger: log}
+func NewHandler(service EventService, auth AuthService, health HealthService, log logger.Logger) *Handler {
+	return &Handler{service: service, auth: auth, health: health, logger: log}
 }
 
 func (h *Handler) Live(c *ginext.Context) {
@@ -50,6 +56,21 @@ func (h *Handler) Ready(c *ginext.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, ginext.H{"status": "ok"})
+}
+
+func (h *Handler) Login(c *ginext.Context) {
+	var req LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
+		return
+	}
+
+	token, err := h.auth.Login(req.Username, req.Role)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, LoginResponse{Token: token, Role: req.Role})
 }
 
 func (h *Handler) CreateEvent(c *ginext.Context) {
@@ -72,7 +93,20 @@ func (h *Handler) CreateEvent(c *ginext.Context) {
 }
 
 func (h *Handler) ListEvents(c *ginext.Context) {
-	events, err := h.service.ListEvents(c.Request.Context())
+	limit, ok := parseUintQuery(c, "limit", 20)
+	if !ok {
+		return
+	}
+	offset, ok := parseUintQuery(c, "offset", 0)
+	if !ok {
+		return
+	}
+
+	events, err := h.service.ListEvents(c.Request.Context(), service.ListEventsInput{
+		Limit:  limit,
+		Offset: offset,
+		Sort:   c.DefaultQuery("sort", "starts_at"),
+	})
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -155,8 +189,13 @@ func (h *Handler) handleError(c *ginext.Context, err error) {
 	case errors.Is(err, domain.ErrInvalidTitle),
 		errors.Is(err, domain.ErrInvalidDate),
 		errors.Is(err, domain.ErrInvalidCapacity),
-		errors.Is(err, domain.ErrInvalidUser):
+		errors.Is(err, domain.ErrInvalidUser),
+		errors.Is(err, domain.ErrInvalidPagination):
 		c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	case errors.Is(err, domain.ErrUnauthorized):
+		c.JSON(http.StatusUnauthorized, ErrorResponse{Error: err.Error()})
+	case errors.Is(err, domain.ErrForbidden):
+		c.JSON(http.StatusForbidden, ErrorResponse{Error: err.Error()})
 	default:
 		h.logger.Error("internal error", "error", err)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
@@ -170,4 +209,17 @@ func parseID(c *ginext.Context, name string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func parseUintQuery(c *ginext.Context, name string, fallback uint64) (uint64, bool) {
+	raw := c.Query(name)
+	if raw == "" {
+		return fallback, true
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid " + name})
+		return 0, false
+	}
+	return value, true
 }

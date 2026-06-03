@@ -23,7 +23,19 @@ func NewEmail(cfg config.EmailConfig) *EmailNotifier {
 	return &EmailNotifier{cfg: cfg, dialer: dialer}
 }
 
+func (n *EmailNotifier) BookingCreated(ctx context.Context, booking domain.Booking) error {
+	return n.send(ctx, booking, "Бронь создана", buildCreatedText(booking))
+}
+
+func (n *EmailNotifier) BookingConfirmed(ctx context.Context, booking domain.Booking) error {
+	return n.send(ctx, booking, "Бронь подтверждена", buildConfirmedText(booking))
+}
+
 func (n *EmailNotifier) BookingCancelled(ctx context.Context, booking domain.Booking) error {
+	return n.send(ctx, booking, "Бронь отменена", buildCancellationText(booking))
+}
+
+func (n *EmailNotifier) send(ctx context.Context, booking domain.Booking, subject string, body string) error {
 	if !n.cfg.Enabled {
 		return nil
 	}
@@ -40,8 +52,8 @@ func (n *EmailNotifier) BookingCancelled(ctx context.Context, booking domain.Boo
 	message := gomail.NewMessage()
 	message.SetHeader("From", n.cfg.From)
 	message.SetHeader("To", booking.UserEmail)
-	message.SetHeader("Subject", "Бронь отменена")
-	message.SetBody("text/plain", buildCancellationText(booking))
+	message.SetHeader("Subject", subject)
+	message.SetBody("text/plain", body)
 
 	resultCh := make(chan error, 1)
 	go func() {

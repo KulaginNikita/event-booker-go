@@ -23,9 +23,16 @@ type Event struct {
 	Bookings          []Booking
 }
 
+type ListEventsFilter struct {
+	Limit  uint64
+	Offset uint64
+	Sort   string
+}
+
 type Booking struct {
 	ID           int64
 	EventID      int64
+	EventTitle   string
 	UserName     string
 	UserEmail    string
 	UserTelegram string

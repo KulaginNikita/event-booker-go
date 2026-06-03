@@ -111,15 +111,17 @@
     const message = document.querySelector("#message");
     const eventsBox = document.querySelector("#events");
     const cards = new Map();
+    let authToken = "";
     let pollTimer = null;
     let loading = false;
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      await ensureAuthToken();
       const startsAt = new Date(document.querySelector("#startsAt").value);
       const response = await fetch("/events", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({
           title: document.querySelector("#title").value,
           starts_at: startsAt.toISOString(),
@@ -143,7 +145,7 @@
       if (loading) return;
       loading = true;
       try {
-        const response = await fetch("/events", { cache: "no-store" });
+        const response = await fetch("/events?limit=100&sort=starts_at", { cache: "no-store" });
         const events = await response.json();
         renderEvents(events, force);
         syncPolling(events);
@@ -208,7 +210,7 @@
       const hasPending = events.some((event) => event.pending_bookings > 0);
 
       if (hasPending && !pollTimer) {
-        pollTimer = setInterval(() => loadEvents(), 3000);
+        pollTimer = setInterval(() => loadEvents(), 10000);
       }
       if (!hasPending && pollTimer) {
         clearInterval(pollTimer);
@@ -218,6 +220,27 @@
 
     function escapeHtml(value) {
       return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    async function ensureAuthToken() {
+      if (authToken) return;
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "admin", role: "admin" })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || "auth failed");
+      }
+      authToken = body.token;
+    }
+
+    function authHeaders() {
+      return {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`
+      };
     }
 
     loadEvents({ force: true });
