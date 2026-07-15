@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/wb-go/wbf/logger"
+	"go.uber.org/zap"
 )
 
 type Expirer interface {
@@ -14,10 +14,10 @@ type Expirer interface {
 type Scheduler struct {
 	service  Expirer
 	interval time.Duration
-	log      logger.Logger
+	log      *zap.SugaredLogger
 }
 
-func New(service Expirer, interval time.Duration, log logger.Logger) *Scheduler {
+func New(service Expirer, interval time.Duration, log *zap.SugaredLogger) *Scheduler {
 	return &Scheduler{service: service, interval: interval, log: log}
 }
 
@@ -43,10 +43,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) tick(ctx context.Context) {
 	count, err := s.service.CancelExpired(ctx)
 	if err != nil {
-		s.log.Error("cancel expired bookings", "error", err)
+		s.log.Errorw("cancel expired bookings", "error", err)
 		return
 	}
 	if count > 0 {
-		s.log.Info("expired bookings cancelled", "count", count)
+		s.log.Infow("expired bookings cancelled", "count", count)
 	}
 }

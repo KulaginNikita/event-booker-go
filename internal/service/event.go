@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wb-go/wbf/logger"
+	"go.uber.org/zap"
 
 	"github.com/KulaginNikita/event-booker/internal/domain"
 )
@@ -68,10 +68,10 @@ type EventService struct {
 	repo            EventRepository
 	notifier        Notifier
 	paymentDeadline time.Duration
-	log             logger.Logger
+	log             *zap.SugaredLogger
 }
 
-func NewEventService(repo EventRepository, notifier Notifier, paymentDeadline time.Duration, log logger.Logger) *EventService {
+func NewEventService(repo EventRepository, notifier Notifier, paymentDeadline time.Duration, log *zap.SugaredLogger) *EventService {
 	return &EventService{
 		repo:            repo,
 		notifier:        notifier,
@@ -187,7 +187,7 @@ func (s *EventService) notifyAsync(booking domain.Booking, event string, notify 
 		defer cancel()
 
 		if err := notify(ctx, booking); err != nil {
-			s.log.Error("notify booking", "booking_id", booking.ID, "event", event, "error", err)
+			s.log.Errorw("notify booking", "booking_id", booking.ID, "event", event, "error", err)
 		}
 	}()
 }

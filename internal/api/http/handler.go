@@ -2,13 +2,14 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/wb-go/wbf/ginext"
-	"github.com/wb-go/wbf/logger"
+	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"github.com/KulaginNikita/event-booker/internal/domain"
 	"github.com/KulaginNikita/event-booker/internal/service"
@@ -35,196 +36,207 @@ type Handler struct {
 	service EventService
 	auth    AuthService
 	health  HealthService
-	logger  logger.Logger
+	logger  *zap.SugaredLogger
 }
 
-func NewHandler(service EventService, auth AuthService, health HealthService, log logger.Logger) *Handler {
+func NewHandler(service EventService, auth AuthService, health HealthService, log *zap.SugaredLogger) *Handler {
 	return &Handler{service: service, auth: auth, health: health, logger: log}
 }
 
-func (h *Handler) Live(c *ginext.Context) {
-	c.JSON(http.StatusOK, ginext.H{"status": "ok"})
+func (h *Handler) Live(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) Ready(c *ginext.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
 	if err := h.health.Ready(ctx); err != nil {
-		h.logger.Error("readiness check failed", "error", err)
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{Error: "service is not ready"})
+		h.logger.Errorw("readiness check failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "service is not ready"})
 		return
 	}
-	c.JSON(http.StatusOK, ginext.H{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *Handler) Login(c *ginext.Context) {
+func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
 		return
 	}
 
 	token, err := h.auth.Login(req.Username, req.Password)
 	if err != nil {
-		h.handleError(c, err)
+		h.handleError(w, err)
 		return
 	}
 	claims, err := h.auth.Parse(token)
 	if err != nil {
-		h.handleError(c, err)
+		h.handleError(w, err)
 		return
 	}
-	c.JSON(http.StatusOK, LoginResponse{Token: token, Username: claims.Subject, Role: claims.Role})
+	writeJSON(w, http.StatusOK, LoginResponse{Token: token, Username: claims.Subject, Role: claims.Role})
 }
 
-func (h *Handler) CreateEvent(c *ginext.Context) {
+func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 	var req CreateEventRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
 		return
 	}
 
-	event, err := h.service.CreateEvent(c.Request.Context(), service.CreateEventInput{
+	event, err := h.service.CreateEvent(r.Context(), service.CreateEventInput{
 		Title:    req.Title,
 		StartsAt: req.StartsAt,
 		Capacity: req.Capacity,
 	})
 	if err != nil {
-		h.handleError(c, err)
+		h.handleError(w, err)
 		return
 	}
-	c.JSON(http.StatusCreated, toEventResponse(event))
+	writeJSON(w, http.StatusCreated, toEventResponse(event))
 }
 
-func (h *Handler) ListEvents(c *ginext.Context) {
-	limit, ok := parseUintQuery(c, "limit", 20)
+func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
+	limit, ok := parseUintQuery(w, r, "limit", 20)
 	if !ok {
 		return
 	}
-	offset, ok := parseUintQuery(c, "offset", 0)
+	offset, ok := parseUintQuery(w, r, "offset", 0)
 	if !ok {
 		return
 	}
 
-	events, err := h.service.ListEvents(c.Request.Context(), service.ListEventsInput{
+	sort := r.URL.Query().Get("sort")
+	if sort == "" {
+		sort = "starts_at"
+	}
+
+	events, err := h.service.ListEvents(r.Context(), service.ListEventsInput{
 		Limit:  limit,
 		Offset: offset,
-		Sort:   c.DefaultQuery("sort", "starts_at"),
+		Sort:   sort,
 	})
 	if err != nil {
-		h.handleError(c, err)
+		h.handleError(w, err)
 		return
 	}
-	c.JSON(http.StatusOK, toEventResponses(events))
+	writeJSON(w, http.StatusOK, toEventResponses(events))
 }
 
-func (h *Handler) GetEvent(c *ginext.Context) {
-	id, ok := parseID(c, "id")
+func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
 	if !ok {
 		return
 	}
 
-	event, err := h.service.GetEvent(c.Request.Context(), id)
+	event, err := h.service.GetEvent(r.Context(), id)
 	if err != nil {
-		h.handleError(c, err)
+		h.handleError(w, err)
 		return
 	}
-	c.JSON(http.StatusOK, toEventResponse(event))
+	writeJSON(w, http.StatusOK, toEventResponse(event))
 }
 
-func (h *Handler) Book(c *ginext.Context) {
-	id, ok := parseID(c, "id")
+func (h *Handler) Book(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
 	if !ok {
 		return
 	}
 
 	var req BookRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
 		return
 	}
 
-	booking, err := h.service.Book(c.Request.Context(), service.BookInput{
+	booking, err := h.service.Book(r.Context(), service.BookInput{
 		EventID:      id,
 		UserName:     req.UserName,
 		UserEmail:    req.UserEmail,
 		UserTelegram: req.UserTelegram,
 	})
 	if err != nil {
-		h.handleError(c, err)
+		h.handleError(w, err)
 		return
 	}
-	c.JSON(http.StatusCreated, toBookingResponse(booking))
+	writeJSON(w, http.StatusCreated, toBookingResponse(booking))
 }
 
-func (h *Handler) Confirm(c *ginext.Context) {
-	id, ok := parseID(c, "id")
+func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
 	if !ok {
 		return
 	}
 
 	var req ConfirmRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid request body"})
 		return
 	}
 
-	booking, err := h.service.Confirm(c.Request.Context(), service.ConfirmInput{
+	booking, err := h.service.Confirm(r.Context(), service.ConfirmInput{
 		EventID:   id,
 		BookingID: req.BookingID,
 	})
 	if err != nil {
-		h.handleError(c, err)
+		h.handleError(w, err)
 		return
 	}
-	c.JSON(http.StatusOK, toBookingResponse(booking))
+	writeJSON(w, http.StatusOK, toBookingResponse(booking))
 }
 
-func (h *Handler) handleError(c *ginext.Context, err error) {
+func (h *Handler) handleError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrEventNotFound),
 		errors.Is(err, domain.ErrBookingNotFound):
-		c.JSON(http.StatusNotFound, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: err.Error()})
 	case errors.Is(err, domain.ErrNoSeats):
-		c.JSON(http.StatusConflict, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error()})
 	case errors.Is(err, domain.ErrBookingExpired),
 		errors.Is(err, domain.ErrBookingNotPending):
-		c.JSON(http.StatusConflict, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error()})
 	case errors.Is(err, domain.ErrInvalidTitle),
 		errors.Is(err, domain.ErrInvalidDate),
 		errors.Is(err, domain.ErrInvalidCapacity),
 		errors.Is(err, domain.ErrInvalidUser),
 		errors.Is(err, domain.ErrInvalidPagination):
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 	case errors.Is(err, domain.ErrUnauthorized):
-		c.JSON(http.StatusUnauthorized, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: err.Error()})
 	case errors.Is(err, domain.ErrForbidden):
-		c.JSON(http.StatusForbidden, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: err.Error()})
 	default:
-		h.logger.Error("internal error", "error", err)
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
+		h.logger.Errorw("internal error", "error", err)
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
 	}
 }
 
-func parseID(c *ginext.Context, name string) (int64, bool) {
-	id, err := strconv.ParseInt(c.Param(name), 10, 64)
+func parseID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, name), 10, 64)
 	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid id"})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid id"})
 		return 0, false
 	}
 	return id, true
 }
 
-func parseUintQuery(c *ginext.Context, name string, fallback uint64) (uint64, bool) {
-	raw := c.Query(name)
+func parseUintQuery(w http.ResponseWriter, r *http.Request, name string, fallback uint64) (uint64, bool) {
+	raw := r.URL.Query().Get(name)
 	if raw == "" {
 		return fallback, true
 	}
 	value, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid " + name})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid " + name})
 		return 0, false
 	}
 	return value, true
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
 }

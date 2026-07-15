@@ -4,11 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	pgxdriver "github.com/wb-go/wbf/dbpg/pgx-driver"
-	"github.com/wb-go/wbf/ginext"
-	"github.com/wb-go/wbf/logger"
 	"go.uber.org/zap"
 
 	httpapi "github.com/KulaginNikita/event-booker/internal/api/http"
@@ -24,10 +22,9 @@ import (
 type Container struct {
 	ctx       context.Context
 	Config    *config.Config
-	Logger    logger.Logger
+	Logger    *zap.SugaredLogger
 	ZapLogger *zap.Logger
 	Closer    *closer.Closer
-	Postgres  *pgxdriver.Postgres
 	Repo      *pgrepo.EventRepository
 	Notifier  *notifier.MultiNotifier
 	Service   *service.EventService
@@ -35,10 +32,10 @@ type Container struct {
 	Health    *service.HealthService
 	Scheduler *scheduler.Scheduler
 	Handler   *httpapi.Handler
-	Router    *ginext.Engine
+	Router    http.Handler
 }
 
-func NewContainer(parentCtx context.Context, cfg *config.Config, log logger.Logger, zapLog *zap.Logger) (*Container, error) {
+func NewContainer(parentCtx context.Context, cfg *config.Config, log *zap.SugaredLogger, zapLog *zap.Logger) (*Container, error) {
 	ctx, cancelTelegram := context.WithCancel(parentCtx)
 	c := &Container{
 		ctx:       ctx,
@@ -70,19 +67,14 @@ func (c *Container) initPostgres() error {
 		return err
 	}
 
-	pg, err := pgxdriver.New(
-		c.Config.Postgres.DSN,
-		c.Logger,
-		pgxdriver.MaxPoolSize(c.Config.Postgres.MaxPoolSize),
-		pgxdriver.MaxConnAttempts(5),
-	)
+	repo, err := pgrepo.NewEventRepository(context.Background(), c.Config.Postgres.DSN, c.Config.Postgres.MaxPoolSize)
 	if err != nil {
 		return err
 	}
 
-	c.Postgres = pg
+	c.Repo = repo
 	c.Closer.Add("postgres", func(_ context.Context) error {
-		pg.Close()
+		repo.Close()
 		return nil
 	})
 	return nil
@@ -102,11 +94,6 @@ func (c *Container) runMigrations() error {
 }
 
 func (c *Container) initRepositories() error {
-	repo, err := pgrepo.NewEventRepository(c.Postgres, c.Logger)
-	if err != nil {
-		return err
-	}
-	c.Repo = repo
 	return nil
 }
 
@@ -114,7 +101,7 @@ func (c *Container) initServices() {
 	emailNotifier := notifier.NewEmail(c.Config.Email)
 	telegramNotifier, err := notifier.NewTelegram(c.ctx, c.Config.Telegram, c.Repo, c.Logger)
 	if err != nil {
-		c.Logger.Error("telegram notifier disabled", "error", err)
+		c.Logger.Errorw("telegram notifier disabled", "error", err)
 	}
 	c.Notifier = notifier.NewMulti(c.Logger, notifier.NewLogNotifier(c.Logger), emailNotifier, telegramNotifier)
 	c.Service = service.NewEventService(c.Repo, c.Notifier, c.Config.Booking.PaymentDeadline, c.Logger)

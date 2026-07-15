@@ -18,7 +18,7 @@ func (r *EventRepository) UpsertTelegramChat(ctx context.Context, username strin
 		SET chat_id = EXCLUDED.chat_id,
 			updated_at = now()
 	`
-	if _, err := r.pg.Exec(ctx, q, username, chatID); err != nil {
+	if _, err := r.pool.Exec(ctx, q, username, chatID); err != nil {
 		return fmt.Errorf("upsert telegram chat: %w", err)
 	}
 	return nil
@@ -32,7 +32,7 @@ func (r *EventRepository) GetTelegramChatIDByUsername(ctx context.Context, usern
 	`
 
 	var chatID int64
-	if err := r.pg.QueryRow(ctx, q, username).Scan(&chatID); err != nil {
+	if err := r.pool.QueryRow(ctx, q, username).Scan(&chatID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, domain.ErrTelegramChatNotFound
 		}

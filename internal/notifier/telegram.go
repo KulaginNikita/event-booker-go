@@ -8,11 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wb-go/wbf/logger"
-
 	"github.com/KulaginNikita/event-booker/internal/config"
 	"github.com/KulaginNikita/event-booker/internal/domain"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.uber.org/zap"
 )
 
 type TelegramChatStore interface {
@@ -24,10 +23,10 @@ type TelegramNotifier struct {
 	cfg   config.TelegramConfig
 	bot   *tgbotapi.BotAPI
 	store TelegramChatStore
-	log   logger.Logger
+	log   *zap.SugaredLogger
 }
 
-func NewTelegram(ctx context.Context, cfg config.TelegramConfig, store TelegramChatStore, log logger.Logger) (*TelegramNotifier, error) {
+func NewTelegram(ctx context.Context, cfg config.TelegramConfig, store TelegramChatStore, log *zap.SugaredLogger) (*TelegramNotifier, error) {
 	if !cfg.Enabled {
 		return &TelegramNotifier{cfg: cfg, store: store, log: log}, nil
 	}
@@ -178,11 +177,11 @@ func (n *TelegramNotifier) rememberChat(ctx context.Context, update tgbotapi.Upd
 	}
 
 	if err := n.store.UpsertTelegramChat(ctx, username, chatID); err != nil {
-		n.log.Warn("failed to remember telegram chat", "username", username, "chat_id", chatID, "error", err)
+		n.log.Warnw("failed to remember telegram chat", "username", username, "chat_id", chatID, "error", err)
 		return
 	}
 
-	n.log.Info("telegram chat remembered", "username", username, "chat_id", chatID)
+	n.log.Infow("telegram chat remembered", "username", username, "chat_id", chatID)
 }
 
 func normalizeTelegramUsername(username string) string {

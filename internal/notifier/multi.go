@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/wb-go/wbf/logger"
+	"go.uber.org/zap"
 
 	"github.com/KulaginNikita/event-booker/internal/domain"
 )
@@ -18,10 +18,10 @@ type BookingNotifier interface {
 
 type MultiNotifier struct {
 	items []BookingNotifier
-	log   logger.Logger
+	log   *zap.SugaredLogger
 }
 
-func NewMulti(log logger.Logger, items ...BookingNotifier) *MultiNotifier {
+func NewMulti(log *zap.SugaredLogger, items ...BookingNotifier) *MultiNotifier {
 	return &MultiNotifier{items: items, log: log}
 }
 
@@ -50,7 +50,7 @@ func (n *MultiNotifier) send(ctx context.Context, booking domain.Booking, event 
 			continue
 		}
 		if err := sendFn(item); err != nil {
-			n.log.Warn("booking notifier failed", "booking_id", booking.ID, "event", event, "error", err)
+			n.log.Warnw("booking notifier failed", "booking_id", booking.ID, "event", event, "error", err)
 			result = errors.Join(result, err)
 		}
 	}

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wb-go/wbf/logger"
+	"go.uber.org/zap"
 
 	"github.com/KulaginNikita/event-booker/internal/domain"
 )
@@ -94,7 +94,7 @@ func TestEventServiceConfirmNotifiesUsers(t *testing.T) {
 		},
 	}
 	notifier := &mockNotifier{}
-	log, _ := logger.InitLogger(logger.ZapEngine, "test", "test", logger.WithLevel(logger.ErrorLevel))
+	log := zap.NewNop().Sugar()
 	svc := NewEventService(repo, notifier, time.Minute, log)
 
 	booking, err := svc.Confirm(context.Background(), ConfirmInput{EventID: 42, BookingID: 9})
@@ -116,7 +116,7 @@ func TestEventServiceCancelExpiredNotifiesUsers(t *testing.T) {
 		},
 	}
 	notifier := &mockNotifier{}
-	log, _ := logger.InitLogger(logger.ZapEngine, "test", "test", logger.WithLevel(logger.ErrorLevel))
+	log := zap.NewNop().Sugar()
 	svc := NewEventService(repo, notifier, time.Minute, log)
 
 	count, err := svc.CancelExpired(context.Background())
@@ -132,7 +132,7 @@ func TestEventServiceCancelExpiredNotifiesUsers(t *testing.T) {
 }
 
 func newTestService(repo *mockRepo) *EventService {
-	log, _ := logger.InitLogger(logger.ZapEngine, "test", "test", logger.WithLevel(logger.ErrorLevel))
+	log := zap.NewNop().Sugar()
 	return NewEventService(repo, &mockNotifier{}, 2*time.Minute, log)
 }
 

@@ -9,36 +9,51 @@ import (
 	"github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	pgxdriver "github.com/wb-go/wbf/dbpg/pgx-driver"
-	"github.com/wb-go/wbf/dbpg/pgx-driver/transaction"
-	"github.com/wb-go/wbf/logger"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/KulaginNikita/event-booker/internal/domain"
 )
 
 type EventRepository struct {
-	pg *pgxdriver.Postgres
-	tm transaction.Manager
+	pool *pgxpool.Pool
 }
 
-func NewEventRepository(pg *pgxdriver.Postgres, log logger.Logger) (*EventRepository, error) {
-	tm, err := transaction.NewManager(pg, log)
+func NewEventRepository(ctx context.Context, dsn string, maxPoolSize int32) (*EventRepository, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse postgres config: %w", err)
 	}
-	return &EventRepository{pg: pg, tm: tm}, nil
+	if maxPoolSize > 0 {
+		cfg.MaxConns = maxPoolSize
+	}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create postgres pool: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+
+	return &EventRepository{pool: pool}, nil
+}
+
+func (r *EventRepository) Close() {
+	r.pool.Close()
 }
 
 func (r *EventRepository) Ping(ctx context.Context) error {
 	var one int
-	if err := r.pg.QueryRow(ctx, `SELECT 1`).Scan(&one); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT 1`).Scan(&one); err != nil {
 		return fmt.Errorf("ping postgres: %w", err)
 	}
 	return nil
 }
 
 func (r *EventRepository) CreateEvent(ctx context.Context, event *domain.Event) error {
-	sql, args, err := r.pg.Insert("events").
+	sql, args, err := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Insert("events").
 		Columns("title", "starts_at", "capacity").
 		Values(event.Title, event.StartsAt, event.Capacity).
 		Suffix("RETURNING id, created_at, updated_at").
@@ -47,7 +62,7 @@ func (r *EventRepository) CreateEvent(ctx context.Context, event *domain.Event) 
 		return fmt.Errorf("build create event query: %w", err)
 	}
 
-	if err := r.pg.QueryRow(ctx, sql, args...).Scan(&event.ID, &event.CreatedAt, &event.UpdatedAt); err != nil {
+	if err := r.pool.QueryRow(ctx, sql, args...).Scan(&event.ID, &event.CreatedAt, &event.UpdatedAt); err != nil {
 		return mapPostgresError(err, "create event")
 	}
 	event.FreeSeats = event.Capacity
@@ -85,7 +100,7 @@ func (r *EventRepository) ListEvents(ctx context.Context, filter domain.ListEven
 		LIMIT $1 OFFSET $2
 	`, orderBy)
 
-	rows, err := r.pg.Query(ctx, query, filter.Limit, filter.Offset)
+	rows, err := r.pool.Query(ctx, query, filter.Limit, filter.Offset)
 	if err != nil {
 		return nil, mapPostgresError(err, "list events")
 	}
@@ -106,12 +121,12 @@ func (r *EventRepository) ListEvents(ctx context.Context, filter domain.ListEven
 }
 
 func (r *EventRepository) GetEvent(ctx context.Context, id int64) (*domain.Event, error) {
-	event, err := r.getEventSummary(ctx, r.pg, id)
+	event, err := r.getEventSummary(ctx, r.pool, id)
 	if err != nil {
 		return nil, err
 	}
 
-	bookings, err := r.listBookings(ctx, r.pg, id)
+	bookings, err := r.listBookings(ctx, r.pool, id)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +136,7 @@ func (r *EventRepository) GetEvent(ctx context.Context, id int64) (*domain.Event
 
 func (r *EventRepository) Book(ctx context.Context, eventID int64, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error) {
 	var created *domain.Booking
-	err := r.tm.ExecuteInTransaction(ctx, "book_event", func(tx pgxdriver.QueryExecuter) error {
+	err := r.executeInTx(ctx, func(tx pgx.Tx) error {
 		eventTitle, err := r.lockEvent(ctx, tx, eventID)
 		if err != nil {
 			return err
@@ -170,7 +185,7 @@ func (r *EventRepository) Book(ctx context.Context, eventID int64, userName stri
 
 func (r *EventRepository) Confirm(ctx context.Context, eventID int64, bookingID int64) (*domain.Booking, error) {
 	var confirmed *domain.Booking
-	err := r.tm.ExecuteInTransaction(ctx, "confirm_booking", func(tx pgxdriver.QueryExecuter) error {
+	err := r.executeInTx(ctx, func(tx pgx.Tx) error {
 		eventTitle, err := r.lockEvent(ctx, tx, eventID)
 		if err != nil {
 			return err
@@ -230,7 +245,7 @@ func (r *EventRepository) Confirm(ctx context.Context, eventID int64, bookingID 
 
 func (r *EventRepository) CancelExpired(ctx context.Context) ([]domain.Booking, error) {
 	var cancelled []domain.Booking
-	err := r.tm.ExecuteInTransaction(ctx, "cancel_expired_bookings", func(tx pgxdriver.QueryExecuter) error {
+	err := r.executeInTx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			UPDATE bookings b
 			SET status = 'cancelled', updated_at = now()
@@ -256,7 +271,7 @@ func (r *EventRepository) CancelExpired(ctx context.Context) ([]domain.Booking, 
 	return cancelled, nil
 }
 
-func (r *EventRepository) lockEvent(ctx context.Context, tx pgxdriver.QueryExecuter, id int64) (string, error) {
+func (r *EventRepository) lockEvent(ctx context.Context, tx queryExecuter, id int64) (string, error) {
 	var title string
 	if err := tx.QueryRow(ctx, `SELECT title FROM events WHERE id = $1 FOR UPDATE`, id).Scan(&title); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -267,7 +282,7 @@ func (r *EventRepository) lockEvent(ctx context.Context, tx pgxdriver.QueryExecu
 	return title, nil
 }
 
-func (r *EventRepository) cancelExpired(ctx context.Context, tx pgxdriver.QueryExecuter, eventID int64) ([]domain.Booking, error) {
+func (r *EventRepository) cancelExpired(ctx context.Context, tx queryExecuter, eventID int64) ([]domain.Booking, error) {
 	rows, err := tx.Query(ctx, `
 		UPDATE bookings
 		SET status = 'cancelled', updated_at = now()
@@ -281,7 +296,7 @@ func (r *EventRepository) cancelExpired(ctx context.Context, tx pgxdriver.QueryE
 	return scanBookings(rows)
 }
 
-func (r *EventRepository) freeSeats(ctx context.Context, tx pgxdriver.QueryExecuter, eventID int64) (int, error) {
+func (r *EventRepository) freeSeats(ctx context.Context, tx queryExecuter, eventID int64) (int, error) {
 	var capacity int
 	var busy int
 	if err := tx.QueryRow(ctx, `
@@ -299,7 +314,7 @@ func (r *EventRepository) freeSeats(ctx context.Context, tx pgxdriver.QueryExecu
 	return capacity - busy, nil
 }
 
-func (r *EventRepository) getBookingForUpdate(ctx context.Context, tx pgxdriver.QueryExecuter, eventID int64, bookingID int64) (*domain.Booking, error) {
+func (r *EventRepository) getBookingForUpdate(ctx context.Context, tx queryExecuter, eventID int64, bookingID int64) (*domain.Booking, error) {
 	booking := &domain.Booking{}
 	err := tx.QueryRow(ctx, `
 		SELECT id, event_id, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
@@ -326,7 +341,7 @@ func (r *EventRepository) getBookingForUpdate(ctx context.Context, tx pgxdriver.
 	return booking, nil
 }
 
-func (r *EventRepository) getEventSummary(ctx context.Context, q pgxdriver.QueryExecuter, id int64) (*domain.Event, error) {
+func (r *EventRepository) getEventSummary(ctx context.Context, q queryExecuter, id int64) (*domain.Event, error) {
 	sql, args, err := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
 		Select(
 			"e.id", "e.title", "e.starts_at", "e.capacity", "e.created_at", "e.updated_at",
@@ -350,7 +365,7 @@ func (r *EventRepository) getEventSummary(ctx context.Context, q pgxdriver.Query
 	return event, nil
 }
 
-func (r *EventRepository) listBookings(ctx context.Context, q pgxdriver.QueryExecuter, eventID int64) ([]domain.Booking, error) {
+func (r *EventRepository) listBookings(ctx context.Context, q queryExecuter, eventID int64) ([]domain.Booking, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id, event_id, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
 		FROM bookings
@@ -366,6 +381,28 @@ func (r *EventRepository) listBookings(ctx context.Context, q pgxdriver.QueryExe
 
 type scanner interface {
 	Scan(dest ...any) error
+}
+
+type queryExecuter interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func (r *EventRepository) executeInTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
 }
 
 func scanEventSummary(scanner scanner) (*domain.Event, error) {
