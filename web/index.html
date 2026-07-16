@@ -388,7 +388,7 @@
           #${booking.id} ${escapeHtml(booking.user_name)} - ${statusText(booking.status)}
           ${booking.user_telegram ? `; TG: ${escapeHtml(booking.user_telegram)}` : ""}
           ${booking.status === "pending" ? ` до ${new Date(booking.expires_at).toLocaleTimeString("ru-RU")}` : ""}
-          ${state.role === "user" && booking.status === "pending" ? `<button class="secondary" type="button" data-event="${item.id}" data-confirm="${booking.id}">Подтвердить</button>` : ""}
+          ${state.role === "user" && booking.status === "pending" && booking.owner_username === state.username ? `<button class="secondary" type="button" data-event="${item.id}" data-confirm="${booking.id}">Подтвердить</button>` : ""}
         </div>
       `).join("");
     }

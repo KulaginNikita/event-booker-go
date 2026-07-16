@@ -13,6 +13,7 @@ var (
 	ErrInvalidCapacity      = errors.New("invalid event capacity")
 	ErrInvalidUser          = errors.New("invalid user data")
 	ErrInvalidPagination    = errors.New("invalid pagination")
+	ErrInvalidState         = errors.New("invalid state")
 	ErrUnauthorized         = errors.New("unauthorized")
 	ErrForbidden            = errors.New("forbidden")
 	ErrTelegramChatNotFound = errors.New("telegram chat not found")

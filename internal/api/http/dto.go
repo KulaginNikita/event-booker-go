@@ -47,13 +47,14 @@ type EventResponse struct {
 }
 
 type BookingResponse struct {
-	ID           int64     `json:"id"`
-	EventID      int64     `json:"event_id"`
-	UserName     string    `json:"user_name"`
-	UserEmail    string    `json:"user_email"`
-	UserTelegram string    `json:"user_telegram,omitempty"`
-	Status       string    `json:"status"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID            int64     `json:"id"`
+	EventID       int64     `json:"event_id"`
+	OwnerUsername string    `json:"owner_username"`
+	UserName      string    `json:"user_name"`
+	UserEmail     string    `json:"user_email"`
+	UserTelegram  string    `json:"user_telegram,omitempty"`
+	Status        string    `json:"status"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }

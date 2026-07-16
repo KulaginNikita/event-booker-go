@@ -63,10 +63,11 @@ func TestEventServiceBookUsesConfiguredDeadline(t *testing.T) {
 	svc := newTestService(repo)
 
 	booking, err := svc.Book(context.Background(), BookInput{
-		EventID:      42,
-		UserName:     "Ann",
-		UserEmail:    "ann@example.com",
-		UserTelegram: "12345",
+		EventID:       42,
+		OwnerUsername: "ann",
+		UserName:      "Ann",
+		UserEmail:     "ann@example.com",
+		UserTelegram:  "12345",
 	})
 	if err != nil {
 		t.Fatalf("book failed: %v", err)
@@ -78,12 +79,12 @@ func TestEventServiceBookUsesConfiguredDeadline(t *testing.T) {
 	if repo.lastDeadline != 2*time.Minute {
 		t.Fatalf("expected configured deadline, got %s", repo.lastDeadline)
 	}
-	if !eventually(func() bool { return svc.notifier.(*mockNotifier).createdCalls == 1 }) {
-		t.Fatalf("expected created notifier call")
+	if repo.lastOwner != "ann" {
+		t.Fatalf("expected owner username to be propagated, got %q", repo.lastOwner)
 	}
 }
 
-func TestEventServiceConfirmNotifiesUsers(t *testing.T) {
+func TestEventServiceConfirmReturnsBooking(t *testing.T) {
 	repo := &mockRepo{
 		confirmed: &domain.Booking{
 			ID:         9,
@@ -97,19 +98,36 @@ func TestEventServiceConfirmNotifiesUsers(t *testing.T) {
 	log := zap.NewNop().Sugar()
 	svc := NewEventService(repo, notifier, time.Minute, log)
 
-	booking, err := svc.Confirm(context.Background(), ConfirmInput{EventID: 42, BookingID: 9})
+	booking, err := svc.Confirm(context.Background(), ConfirmInput{
+		EventID:       42,
+		BookingID:     9,
+		ActorUsername: "ann",
+		ActorRole:     RoleUser,
+	})
 	if err != nil {
 		t.Fatalf("confirm failed: %v", err)
 	}
 	if booking.ID != 9 {
 		t.Fatalf("unexpected booking id: %d", booking.ID)
 	}
-	if !eventually(func() bool { return notifier.confirmedCalls == 1 }) {
-		t.Fatalf("expected confirmed notifier call, got %d", notifier.confirmedCalls)
+}
+
+func TestEventServiceConfirmRejectsForeignBooking(t *testing.T) {
+	repo := &mockRepo{forbiddenConfirm: true}
+	svc := newTestService(repo)
+
+	_, err := svc.Confirm(context.Background(), ConfirmInput{
+		EventID:       42,
+		BookingID:     9,
+		ActorUsername: "kate",
+		ActorRole:     RoleUser,
+	})
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected forbidden, got %v", err)
 	}
 }
 
-func TestEventServiceCancelExpiredNotifiesUsers(t *testing.T) {
+func TestEventServiceCancelExpiredReturnsCancelledCount(t *testing.T) {
 	repo := &mockRepo{
 		cancelled: []domain.Booking{
 			{ID: 7, EventID: 1, EventTitle: "Go workshop", UserEmail: "user@example.com", Status: domain.StatusCancelled},
@@ -126,8 +144,62 @@ func TestEventServiceCancelExpiredNotifiesUsers(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected 1 cancelled booking, got %d", count)
 	}
-	if !eventually(func() bool { return notifier.cancelledCalls == 1 }) {
-		t.Fatalf("expected notifier call, got %d", notifier.cancelledCalls)
+}
+
+func TestEventServiceDispatchNotificationsMarksSent(t *testing.T) {
+	repo := &mockRepo{
+		notifications: []domain.NotificationEvent{
+			{
+				ID:          10,
+				Type:        domain.NotificationBookingCreated,
+				Attempts:    1,
+				MaxAttempts: 5,
+				Booking:     domain.Booking{ID: 7, EventTitle: "Go workshop", UserEmail: "ann@example.com"},
+			},
+		},
+	}
+	notifier := &mockNotifier{}
+	svc := NewEventService(repo, notifier, time.Minute, zap.NewNop().Sugar())
+
+	count, err := svc.DispatchNotifications(context.Background())
+	if err != nil {
+		t.Fatalf("dispatch notifications failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one sent notification, got %d", count)
+	}
+	if notifier.createdCalls != 1 {
+		t.Fatalf("expected created notifier call, got %d", notifier.createdCalls)
+	}
+	if len(repo.sentNotifications) != 1 || repo.sentNotifications[0] != 10 {
+		t.Fatalf("expected notification 10 to be marked sent, got %#v", repo.sentNotifications)
+	}
+}
+
+func TestEventServiceDispatchNotificationsReschedulesFailedSend(t *testing.T) {
+	repo := &mockRepo{
+		notifications: []domain.NotificationEvent{
+			{
+				ID:          11,
+				Type:        domain.NotificationBookingCreated,
+				Attempts:    1,
+				MaxAttempts: 5,
+				Booking:     domain.Booking{ID: 8, EventTitle: "Go workshop", UserEmail: "ann@example.com"},
+			},
+		},
+	}
+	notifier := &mockNotifier{failCreated: true}
+	svc := NewEventService(repo, notifier, time.Minute, zap.NewNop().Sugar())
+
+	count, err := svc.DispatchNotifications(context.Background())
+	if err != nil {
+		t.Fatalf("dispatch notifications failed: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected zero sent notifications, got %d", count)
+	}
+	if len(repo.rescheduledNotifications) != 1 || repo.rescheduledNotifications[0] != 11 {
+		t.Fatalf("expected notification 11 to be rescheduled, got %#v", repo.rescheduledNotifications)
 	}
 }
 
@@ -137,9 +209,15 @@ func newTestService(repo *mockRepo) *EventService {
 }
 
 type mockRepo struct {
-	lastDeadline time.Duration
-	cancelled    []domain.Booking
-	confirmed    *domain.Booking
+	lastDeadline             time.Duration
+	lastOwner                string
+	cancelled                []domain.Booking
+	confirmed                *domain.Booking
+	forbiddenConfirm         bool
+	notifications            []domain.NotificationEvent
+	sentNotifications        []int64
+	rescheduledNotifications []int64
+	failedNotifications      []int64
 }
 
 func (m *mockRepo) CreateEvent(_ context.Context, event *domain.Event) error {
@@ -156,21 +234,26 @@ func (m *mockRepo) GetEvent(_ context.Context, _ int64) (*domain.Event, error) {
 	return nil, domain.ErrEventNotFound
 }
 
-func (m *mockRepo) Book(_ context.Context, eventID int64, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error) {
+func (m *mockRepo) Book(_ context.Context, eventID int64, ownerUsername string, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error) {
 	m.lastDeadline = deadline
+	m.lastOwner = ownerUsername
 	return &domain.Booking{
-		ID:           1,
-		EventID:      eventID,
-		EventTitle:   "Go workshop",
-		UserName:     userName,
-		UserEmail:    userEmail,
-		UserTelegram: userTelegram,
-		Status:       domain.StatusPending,
-		ExpiresAt:    time.Now().Add(deadline),
+		ID:            1,
+		EventID:       eventID,
+		EventTitle:    "Go workshop",
+		OwnerUsername: ownerUsername,
+		UserName:      userName,
+		UserEmail:     userEmail,
+		UserTelegram:  userTelegram,
+		Status:        domain.StatusPending,
+		ExpiresAt:     time.Now().Add(deadline),
 	}, nil
 }
 
-func (m *mockRepo) Confirm(_ context.Context, _ int64, _ int64) (*domain.Booking, error) {
+func (m *mockRepo) Confirm(_ context.Context, _ int64, _ int64, _ string, _ bool) (*domain.Booking, error) {
+	if m.forbiddenConfirm {
+		return nil, domain.ErrForbidden
+	}
 	if m.confirmed != nil {
 		return m.confirmed, nil
 	}
@@ -181,13 +264,36 @@ func (m *mockRepo) CancelExpired(_ context.Context) ([]domain.Booking, error) {
 	return m.cancelled, nil
 }
 
+func (m *mockRepo) FetchDueNotifications(_ context.Context, _ int) ([]domain.NotificationEvent, error) {
+	return m.notifications, nil
+}
+
+func (m *mockRepo) MarkNotificationSent(_ context.Context, id int64) error {
+	m.sentNotifications = append(m.sentNotifications, id)
+	return nil
+}
+
+func (m *mockRepo) RescheduleNotification(_ context.Context, id int64, _ time.Time, _ string) error {
+	m.rescheduledNotifications = append(m.rescheduledNotifications, id)
+	return nil
+}
+
+func (m *mockRepo) MarkNotificationFailed(_ context.Context, id int64, _ string) error {
+	m.failedNotifications = append(m.failedNotifications, id)
+	return nil
+}
+
 type mockNotifier struct {
 	createdCalls   int
 	confirmedCalls int
 	cancelledCalls int
+	failCreated    bool
 }
 
 func (m *mockNotifier) BookingCreated(_ context.Context, _ domain.Booking) error {
+	if m.failCreated {
+		return errors.New("send failed")
+	}
 	m.createdCalls++
 	return nil
 }

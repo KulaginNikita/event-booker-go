@@ -18,6 +18,8 @@ type EventRepository struct {
 	pool *pgxpool.Pool
 }
 
+const notificationLockTTL = time.Minute
+
 func NewEventRepository(ctx context.Context, dsn string, maxPoolSize int32) (*EventRepository, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -134,15 +136,22 @@ func (r *EventRepository) GetEvent(ctx context.Context, id int64) (*domain.Event
 	return event, nil
 }
 
-func (r *EventRepository) Book(ctx context.Context, eventID int64, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error) {
+func (r *EventRepository) Book(ctx context.Context, eventID int64, ownerUsername string, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error) {
 	var created *domain.Booking
 	err := r.executeInTx(ctx, func(tx pgx.Tx) error {
 		eventTitle, err := r.lockEvent(ctx, tx, eventID)
 		if err != nil {
 			return err
 		}
-		if _, err := r.cancelExpired(ctx, tx, eventID); err != nil {
+		cancelled, err := r.cancelExpired(ctx, tx, eventID)
+		if err != nil {
 			return err
+		}
+		for _, booking := range cancelled {
+			booking.EventTitle = eventTitle
+			if err := r.enqueueNotification(ctx, tx, booking.ID, domain.NotificationBookingCancelled); err != nil {
+				return err
+			}
 		}
 
 		freeSeats, err := r.freeSeats(ctx, tx, eventID)
@@ -156,12 +165,13 @@ func (r *EventRepository) Book(ctx context.Context, eventID int64, userName stri
 		booking := &domain.Booking{}
 		expiresAt := time.Now().UTC().Add(deadline)
 		err = tx.QueryRow(ctx, `
-			INSERT INTO bookings (event_id, user_name, user_email, user_telegram, status, expires_at)
-			VALUES ($1, $2, $3, $4, 'pending', $5)
-			RETURNING id, event_id, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
-		`, eventID, userName, userEmail, userTelegram, expiresAt).Scan(
+			INSERT INTO bookings (event_id, owner_username, user_name, user_email, user_telegram, status, expires_at)
+			VALUES ($1, $2, $3, $4, $5, 'pending', $6)
+			RETURNING id, event_id, owner_username, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
+		`, eventID, ownerUsername, userName, userEmail, userTelegram, expiresAt).Scan(
 			&booking.ID,
 			&booking.EventID,
+			&booking.OwnerUsername,
 			&booking.UserName,
 			&booking.UserEmail,
 			&booking.UserTelegram,
@@ -174,6 +184,9 @@ func (r *EventRepository) Book(ctx context.Context, eventID int64, userName stri
 			return mapPostgresError(err, "insert booking")
 		}
 		booking.EventTitle = eventTitle
+		if err := r.enqueueNotification(ctx, tx, booking.ID, domain.NotificationBookingCreated); err != nil {
+			return err
+		}
 		created = booking
 		return nil
 	})
@@ -183,8 +196,9 @@ func (r *EventRepository) Book(ctx context.Context, eventID int64, userName stri
 	return created, nil
 }
 
-func (r *EventRepository) Confirm(ctx context.Context, eventID int64, bookingID int64) (*domain.Booking, error) {
+func (r *EventRepository) Confirm(ctx context.Context, eventID int64, bookingID int64, actorUsername string, isAdmin bool) (*domain.Booking, error) {
 	var confirmed *domain.Booking
+	var resultErr error
 	err := r.executeInTx(ctx, func(tx pgx.Tx) error {
 		eventTitle, err := r.lockEvent(ctx, tx, eventID)
 		if err != nil {
@@ -196,6 +210,9 @@ func (r *EventRepository) Confirm(ctx context.Context, eventID int64, bookingID 
 			return err
 		}
 		booking.EventTitle = eventTitle
+		if !isAdmin && booking.OwnerUsername != actorUsername {
+			return domain.ErrForbidden
+		}
 		if booking.Status == domain.StatusConfirmed {
 			confirmed = booking
 			return nil
@@ -211,17 +228,23 @@ func (r *EventRepository) Confirm(ctx context.Context, eventID int64, bookingID 
 			`, booking.ID); err != nil {
 				return mapPostgresError(err, "cancel expired booking")
 			}
-			return domain.ErrBookingExpired
+			booking.Status = domain.StatusCancelled
+			if err := r.enqueueNotification(ctx, tx, booking.ID, domain.NotificationBookingCancelled); err != nil {
+				return err
+			}
+			resultErr = domain.ErrBookingExpired
+			return nil
 		}
 
 		err = tx.QueryRow(ctx, `
 			UPDATE bookings
 			SET status = 'confirmed', updated_at = now()
 			WHERE id = $1
-			RETURNING id, event_id, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
+			RETURNING id, event_id, owner_username, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
 		`, booking.ID).Scan(
 			&booking.ID,
 			&booking.EventID,
+			&booking.OwnerUsername,
 			&booking.UserName,
 			&booking.UserEmail,
 			&booking.UserTelegram,
@@ -234,11 +257,17 @@ func (r *EventRepository) Confirm(ctx context.Context, eventID int64, bookingID 
 			return mapPostgresError(err, "confirm booking")
 		}
 		booking.EventTitle = eventTitle
+		if err := r.enqueueNotification(ctx, tx, booking.ID, domain.NotificationBookingConfirmed); err != nil {
+			return err
+		}
 		confirmed = booking
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if resultErr != nil {
+		return nil, resultErr
 	}
 	return confirmed, nil
 }
@@ -251,7 +280,7 @@ func (r *EventRepository) CancelExpired(ctx context.Context) ([]domain.Booking, 
 			SET status = 'cancelled', updated_at = now()
 			FROM events e
 			WHERE b.event_id = e.id AND b.status = 'pending' AND b.expires_at <= now()
-			RETURNING b.id, b.event_id, e.title, b.user_name, b.user_email, b.user_telegram, b.status, b.expires_at, b.created_at, b.updated_at
+			RETURNING b.id, b.event_id, e.title, b.owner_username, b.user_name, b.user_email, b.user_telegram, b.status, b.expires_at, b.created_at, b.updated_at
 		`)
 		if err != nil {
 			return mapPostgresError(err, "cancel expired bookings")
@@ -261,6 +290,11 @@ func (r *EventRepository) CancelExpired(ctx context.Context) ([]domain.Booking, 
 		items, err := scanBookingsWithEventTitle(rows)
 		if err != nil {
 			return err
+		}
+		for _, booking := range items {
+			if err := r.enqueueNotification(ctx, tx, booking.ID, domain.NotificationBookingCancelled); err != nil {
+				return err
+			}
 		}
 		cancelled = items
 		return nil
@@ -287,7 +321,7 @@ func (r *EventRepository) cancelExpired(ctx context.Context, tx queryExecuter, e
 		UPDATE bookings
 		SET status = 'cancelled', updated_at = now()
 		WHERE event_id = $1 AND status = 'pending' AND expires_at <= now()
-		RETURNING id, event_id, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
+		RETURNING id, event_id, owner_username, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
 	`, eventID)
 	if err != nil {
 		return nil, mapPostgresError(err, "cancel expired event bookings")
@@ -317,13 +351,14 @@ func (r *EventRepository) freeSeats(ctx context.Context, tx queryExecuter, event
 func (r *EventRepository) getBookingForUpdate(ctx context.Context, tx queryExecuter, eventID int64, bookingID int64) (*domain.Booking, error) {
 	booking := &domain.Booking{}
 	err := tx.QueryRow(ctx, `
-		SELECT id, event_id, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
+		SELECT id, event_id, owner_username, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
 		FROM bookings
 		WHERE event_id = $1 AND id = $2
 		FOR UPDATE
 	`, eventID, bookingID).Scan(
 		&booking.ID,
 		&booking.EventID,
+		&booking.OwnerUsername,
 		&booking.UserName,
 		&booking.UserEmail,
 		&booking.UserTelegram,
@@ -367,7 +402,7 @@ func (r *EventRepository) getEventSummary(ctx context.Context, q queryExecuter, 
 
 func (r *EventRepository) listBookings(ctx context.Context, q queryExecuter, eventID int64) ([]domain.Booking, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id, event_id, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
+		SELECT id, event_id, owner_username, user_name, user_email, user_telegram, status, expires_at, created_at, updated_at
 		FROM bookings
 		WHERE event_id = $1
 		ORDER BY created_at DESC, id DESC
@@ -377,6 +412,124 @@ func (r *EventRepository) listBookings(ctx context.Context, q queryExecuter, eve
 	}
 	defer rows.Close()
 	return scanBookings(rows)
+}
+
+func (r *EventRepository) FetchDueNotifications(ctx context.Context, limit int) ([]domain.NotificationEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	var result []domain.NotificationEvent
+	err := r.executeInTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			WITH picked AS (
+				SELECT id
+				FROM notification_outbox
+				WHERE
+					(status = 'pending' AND next_attempt_at <= now())
+					OR (status = 'processing' AND locked_until <= now())
+				ORDER BY next_attempt_at ASC, id ASC
+				LIMIT $1
+				FOR UPDATE SKIP LOCKED
+			),
+			updated AS (
+				UPDATE notification_outbox o
+				SET status = 'processing',
+					attempts = attempts + 1,
+					locked_until = now() + ($2::integer * interval '1 second'),
+					updated_at = now()
+				FROM picked
+				WHERE o.id = picked.id
+				RETURNING o.id, o.booking_id, o.event_type, o.attempts, o.max_attempts
+			)
+			SELECT u.id, u.event_type, u.attempts, u.max_attempts,
+				b.id, b.event_id, e.title, b.owner_username, b.user_name, b.user_email,
+				b.user_telegram, b.status, b.expires_at, b.created_at, b.updated_at
+			FROM updated u
+			JOIN bookings b ON b.id = u.booking_id
+			JOIN events e ON e.id = b.event_id
+			ORDER BY u.id ASC
+		`, limit, int(notificationLockTTL.Seconds()))
+		if err != nil {
+			return mapPostgresError(err, "fetch due notifications")
+		}
+		defer rows.Close()
+
+		items, err := scanNotificationEvents(rows)
+		if err != nil {
+			return err
+		}
+		result = items
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (r *EventRepository) MarkNotificationSent(ctx context.Context, id int64) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE notification_outbox
+		SET status = 'sent', locked_until = NULL, last_error = '', updated_at = now()
+		WHERE id = $1 AND status = 'processing'
+	`, id)
+	if err != nil {
+		return mapPostgresError(err, "mark notification sent")
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrInvalidState
+	}
+	return nil
+}
+
+func (r *EventRepository) RescheduleNotification(ctx context.Context, id int64, nextAttemptAt time.Time, reason string) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE notification_outbox
+		SET status = 'pending',
+			next_attempt_at = $2,
+			locked_until = NULL,
+			last_error = $3,
+			updated_at = now()
+		WHERE id = $1 AND status = 'processing'
+	`, id, nextAttemptAt, trimReason(reason))
+	if err != nil {
+		return mapPostgresError(err, "reschedule notification")
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrInvalidState
+	}
+	return nil
+}
+
+func (r *EventRepository) MarkNotificationFailed(ctx context.Context, id int64, reason string) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE notification_outbox
+		SET status = 'failed',
+			locked_until = NULL,
+			last_error = $2,
+			updated_at = now()
+		WHERE id = $1 AND status = 'processing'
+	`, id, trimReason(reason))
+	if err != nil {
+		return mapPostgresError(err, "mark notification failed")
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrInvalidState
+	}
+	return nil
+}
+
+func (r *EventRepository) enqueueNotification(ctx context.Context, tx queryExecuter, bookingID int64, eventType domain.NotificationEventType) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO notification_outbox (booking_id, event_type)
+		VALUES ($1, $2)
+		ON CONFLICT (booking_id, event_type) DO NOTHING
+	`, bookingID, eventType)
+	if err != nil {
+		return mapPostgresError(err, "enqueue notification")
+	}
+	return nil
 }
 
 type scanner interface {
@@ -433,6 +586,7 @@ func scanBooking(scanner scanner) (*domain.Booking, error) {
 	if err := scanner.Scan(
 		&booking.ID,
 		&booking.EventID,
+		&booking.OwnerUsername,
 		&booking.UserName,
 		&booking.UserEmail,
 		&booking.UserTelegram,
@@ -470,6 +624,7 @@ func scanBookingWithEventTitle(scanner scanner) (*domain.Booking, error) {
 		&booking.ID,
 		&booking.EventID,
 		&booking.EventTitle,
+		&booking.OwnerUsername,
 		&booking.UserName,
 		&booking.UserEmail,
 		&booking.UserTelegram,
@@ -499,6 +654,47 @@ func scanBookingsWithEventTitle(rows pgx.Rows) ([]domain.Booking, error) {
 		return nil, fmt.Errorf("iterate bookings with event title: %w", err)
 	}
 	return result, nil
+}
+
+func scanNotificationEvents(rows pgx.Rows) ([]domain.NotificationEvent, error) {
+	var result []domain.NotificationEvent
+	for rows.Next() {
+		var item domain.NotificationEvent
+		var eventType string
+		if err := rows.Scan(
+			&item.ID,
+			&eventType,
+			&item.Attempts,
+			&item.MaxAttempts,
+			&item.Booking.ID,
+			&item.Booking.EventID,
+			&item.Booking.EventTitle,
+			&item.Booking.OwnerUsername,
+			&item.Booking.UserName,
+			&item.Booking.UserEmail,
+			&item.Booking.UserTelegram,
+			&item.Booking.Status,
+			&item.Booking.ExpiresAt,
+			&item.Booking.CreatedAt,
+			&item.Booking.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan notification event: %w", err)
+		}
+		item.Type = domain.NotificationEventType(eventType)
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate notification events: %w", err)
+	}
+	return result, nil
+}
+
+func trimReason(reason string) string {
+	const maxReasonLen = 1000
+	if len(reason) <= maxReasonLen {
+		return reason
+	}
+	return reason[:maxReasonLen]
 }
 
 func mapPostgresError(err error, operation string) error {

@@ -144,6 +144,11 @@ func (h *Handler) Book(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	owner, _, ok := currentUser(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: domain.ErrUnauthorized.Error()})
+		return
+	}
 
 	var req BookRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -152,10 +157,11 @@ func (h *Handler) Book(w http.ResponseWriter, r *http.Request) {
 	}
 
 	booking, err := h.service.Book(r.Context(), service.BookInput{
-		EventID:      id,
-		UserName:     req.UserName,
-		UserEmail:    req.UserEmail,
-		UserTelegram: req.UserTelegram,
+		EventID:       id,
+		OwnerUsername: owner,
+		UserName:      req.UserName,
+		UserEmail:     req.UserEmail,
+		UserTelegram:  req.UserTelegram,
 	})
 	if err != nil {
 		h.handleError(w, err)
@@ -169,6 +175,11 @@ func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	username, role, ok := currentUser(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: domain.ErrUnauthorized.Error()})
+		return
+	}
 
 	var req ConfirmRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -177,8 +188,10 @@ func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	booking, err := h.service.Confirm(r.Context(), service.ConfirmInput{
-		EventID:   id,
-		BookingID: req.BookingID,
+		EventID:       id,
+		BookingID:     req.BookingID,
+		ActorUsername: username,
+		ActorRole:     role,
 	})
 	if err != nil {
 		h.handleError(w, err)

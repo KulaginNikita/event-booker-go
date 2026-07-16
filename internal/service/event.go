@@ -13,14 +13,18 @@ import (
 )
 
 const (
-	maxTitleLen      = 160
-	maxUserLen       = 100
-	maxEmailLen      = 180
-	maxTelegramLen   = 64
-	maxCapacity      = 100000
-	maxEventFuture   = 2 * 365 * 24 * time.Hour
-	defaultListLimit = 20
-	maxListLimit     = 100
+	maxTitleLen       = 160
+	maxUserLen        = 100
+	maxOwnerLen       = 100
+	maxEmailLen       = 180
+	maxTelegramLen    = 64
+	maxCapacity       = 100000
+	maxEventFuture    = 2 * 365 * 24 * time.Hour
+	defaultListLimit  = 20
+	maxListLimit      = 100
+	outboxBatchSize   = 50
+	outboxBaseBackoff = 30 * time.Second
+	outboxMaxBackoff  = 10 * time.Minute
 )
 
 var telegramRe = regexp.MustCompile(`^(@[A-Za-z0-9_]{5,32}|-?[0-9]{5,20})$`)
@@ -29,9 +33,13 @@ type EventRepository interface {
 	CreateEvent(ctx context.Context, event *domain.Event) error
 	ListEvents(ctx context.Context, filter domain.ListEventsFilter) ([]domain.Event, error)
 	GetEvent(ctx context.Context, id int64) (*domain.Event, error)
-	Book(ctx context.Context, eventID int64, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error)
-	Confirm(ctx context.Context, eventID int64, bookingID int64) (*domain.Booking, error)
+	Book(ctx context.Context, eventID int64, ownerUsername string, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error)
+	Confirm(ctx context.Context, eventID int64, bookingID int64, actorUsername string, isAdmin bool) (*domain.Booking, error)
 	CancelExpired(ctx context.Context) ([]domain.Booking, error)
+	FetchDueNotifications(ctx context.Context, limit int) ([]domain.NotificationEvent, error)
+	MarkNotificationSent(ctx context.Context, id int64) error
+	RescheduleNotification(ctx context.Context, id int64, nextAttemptAt time.Time, reason string) error
+	MarkNotificationFailed(ctx context.Context, id int64, reason string) error
 }
 
 type Notifier interface {
@@ -53,15 +61,18 @@ type ListEventsInput struct {
 }
 
 type BookInput struct {
-	EventID      int64
-	UserName     string
-	UserEmail    string
-	UserTelegram string
+	EventID       int64
+	OwnerUsername string
+	UserName      string
+	UserEmail     string
+	UserTelegram  string
 }
 
 type ConfirmInput struct {
-	EventID   int64
-	BookingID int64
+	EventID       int64
+	BookingID     int64
+	ActorUsername string
+	ActorRole     string
 }
 
 type EventService struct {
@@ -136,10 +147,12 @@ func (s *EventService) GetEvent(ctx context.Context, id int64) (*domain.Event, e
 }
 
 func (s *EventService) Book(ctx context.Context, in BookInput) (*domain.Booking, error) {
+	ownerUsername := strings.TrimSpace(in.OwnerUsername)
 	userName := strings.TrimSpace(in.UserName)
 	userEmail := strings.TrimSpace(in.UserEmail)
 	userTelegram := strings.TrimSpace(in.UserTelegram)
-	if in.EventID <= 0 || userName == "" || userEmail == "" ||
+	if in.EventID <= 0 || ownerUsername == "" || userName == "" || userEmail == "" ||
+		len([]rune(ownerUsername)) > maxOwnerLen ||
 		len([]rune(userName)) > maxUserLen || len([]rune(userEmail)) > maxEmailLen ||
 		len([]rune(userTelegram)) > maxTelegramLen {
 		return nil, domain.ErrInvalidUser
@@ -150,23 +163,22 @@ func (s *EventService) Book(ctx context.Context, in BookInput) (*domain.Booking,
 	if userTelegram != "" && !telegramRe.MatchString(userTelegram) {
 		return nil, domain.ErrInvalidUser
 	}
-	booking, err := s.repo.Book(ctx, in.EventID, userName, userEmail, userTelegram, s.paymentDeadline)
+	booking, err := s.repo.Book(ctx, in.EventID, ownerUsername, userName, userEmail, userTelegram, s.paymentDeadline)
 	if err != nil {
 		return nil, err
 	}
-	s.notifyAsync(*booking, "created", s.notifier.BookingCreated)
 	return booking, nil
 }
 
 func (s *EventService) Confirm(ctx context.Context, in ConfirmInput) (*domain.Booking, error) {
-	if in.EventID <= 0 || in.BookingID <= 0 {
+	actorUsername := strings.TrimSpace(in.ActorUsername)
+	if in.EventID <= 0 || in.BookingID <= 0 || actorUsername == "" {
 		return nil, domain.ErrBookingNotFound
 	}
-	booking, err := s.repo.Confirm(ctx, in.EventID, in.BookingID)
+	booking, err := s.repo.Confirm(ctx, in.EventID, in.BookingID, actorUsername, in.ActorRole == RoleAdmin)
 	if err != nil {
 		return nil, err
 	}
-	s.notifyAsync(*booking, "confirmed", s.notifier.BookingConfirmed)
 	return booking, nil
 }
 
@@ -175,19 +187,66 @@ func (s *EventService) CancelExpired(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	for _, booking := range cancelled {
-		s.notifyAsync(booking, "cancelled", s.notifier.BookingCancelled)
-	}
 	return len(cancelled), nil
 }
 
-func (s *EventService) notifyAsync(booking domain.Booking, event string, notify func(context.Context, domain.Booking) error) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
+func (s *EventService) DispatchNotifications(ctx context.Context) (int, error) {
+	items, err := s.repo.FetchDueNotifications(ctx, outboxBatchSize)
+	if err != nil {
+		return 0, err
+	}
 
-		if err := notify(ctx, booking); err != nil {
-			s.log.Errorw("notify booking", "booking_id", booking.ID, "event", event, "error", err)
+	sent := 0
+	for _, item := range items {
+		if err := s.dispatchNotification(ctx, item); err != nil {
+			s.log.Warnw("booking notification failed",
+				"outbox_id", item.ID,
+				"booking_id", item.Booking.ID,
+				"type", item.Type,
+				"attempts", item.Attempts,
+				"error", err,
+			)
+			if item.Attempts >= item.MaxAttempts {
+				if markErr := s.repo.MarkNotificationFailed(ctx, item.ID, err.Error()); markErr != nil {
+					return sent, markErr
+				}
+				continue
+			}
+			if rescheduleErr := s.repo.RescheduleNotification(ctx, item.ID, nextNotificationAttempt(item.Attempts), err.Error()); rescheduleErr != nil {
+				return sent, rescheduleErr
+			}
+			continue
 		}
-	}()
+
+		if err := s.repo.MarkNotificationSent(ctx, item.ID); err != nil {
+			return sent, err
+		}
+		sent++
+	}
+
+	return sent, nil
+}
+
+func (s *EventService) dispatchNotification(ctx context.Context, item domain.NotificationEvent) error {
+	switch item.Type {
+	case domain.NotificationBookingCreated:
+		return s.notifier.BookingCreated(ctx, item.Booking)
+	case domain.NotificationBookingConfirmed:
+		return s.notifier.BookingConfirmed(ctx, item.Booking)
+	case domain.NotificationBookingCancelled:
+		return s.notifier.BookingCancelled(ctx, item.Booking)
+	default:
+		return domain.ErrInvalidState
+	}
+}
+
+func nextNotificationAttempt(attempts int) time.Time {
+	delay := time.Duration(attempts) * outboxBaseBackoff
+	if delay <= 0 {
+		delay = outboxBaseBackoff
+	}
+	if delay > outboxMaxBackoff {
+		delay = outboxMaxBackoff
+	}
+	return time.Now().UTC().Add(delay)
 }

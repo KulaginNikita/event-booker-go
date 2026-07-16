@@ -15,6 +15,12 @@ const (
 	roleContextKey contextKey = "role"
 )
 
+func currentUser(ctx context.Context) (string, string, bool) {
+	username, userOK := ctx.Value(userContextKey).(string)
+	role, roleOK := ctx.Value(roleContextKey).(string)
+	return username, role, userOK && roleOK
+}
+
 func (h *Handler) RequireRole(roles ...string) func(http.Handler) http.Handler {
 	allowed := make(map[string]struct{}, len(roles))
 	for _, role := range roles {

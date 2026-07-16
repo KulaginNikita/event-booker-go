@@ -28,15 +28,16 @@ func toEventResponses(events []domain.Event) []EventResponse {
 
 func toBookingResponse(booking *domain.Booking) BookingResponse {
 	return BookingResponse{
-		ID:           booking.ID,
-		EventID:      booking.EventID,
-		UserName:     booking.UserName,
-		UserEmail:    booking.UserEmail,
-		UserTelegram: booking.UserTelegram,
-		Status:       string(booking.Status),
-		ExpiresAt:    booking.ExpiresAt,
-		CreatedAt:    booking.CreatedAt,
-		UpdatedAt:    booking.UpdatedAt,
+		ID:            booking.ID,
+		EventID:       booking.EventID,
+		OwnerUsername: booking.OwnerUsername,
+		UserName:      booking.UserName,
+		UserEmail:     booking.UserEmail,
+		UserTelegram:  booking.UserTelegram,
+		Status:        string(booking.Status),
+		ExpiresAt:     booking.ExpiresAt,
+		CreatedAt:     booking.CreatedAt,
+		UpdatedAt:     booking.UpdatedAt,
 	}
 }
 

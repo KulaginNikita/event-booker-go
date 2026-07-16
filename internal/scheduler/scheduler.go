@@ -9,6 +9,7 @@ import (
 
 type Expirer interface {
 	CancelExpired(ctx context.Context) (int, error)
+	DispatchNotifications(ctx context.Context) (int, error)
 }
 
 type Scheduler struct {
@@ -44,9 +45,16 @@ func (s *Scheduler) tick(ctx context.Context) {
 	count, err := s.service.CancelExpired(ctx)
 	if err != nil {
 		s.log.Errorw("cancel expired bookings", "error", err)
+	} else if count > 0 {
+		s.log.Infow("expired bookings cancelled", "count", count)
+	}
+
+	sent, err := s.service.DispatchNotifications(ctx)
+	if err != nil {
+		s.log.Errorw("dispatch booking notifications", "error", err)
 		return
 	}
-	if count > 0 {
-		s.log.Infow("expired bookings cancelled", "count", count)
+	if sent > 0 {
+		s.log.Infow("booking notifications sent", "count", sent)
 	}
 }
