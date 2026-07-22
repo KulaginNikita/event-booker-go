@@ -1,10 +1,13 @@
-.PHONY: run test vet tidy compose-up compose-down
+.PHONY: run test test-integration vet tidy compose-up compose-down
 
 run:
 	go run ./cmd/eventbooker
 
 test:
 	go test ./...
+
+test-integration:
+	go test -tags=integration ./internal/integration
 
 vet:
 	go vet ./...
