@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -9,9 +10,11 @@ import (
 )
 
 func TestAuthServiceLoginAndParse(t *testing.T) {
-	svc := NewAuthService("secret", time.Hour, "admin:password:admin,user:password:user")
+	svc := NewAuthService("secret", time.Hour, "event-booker", "event-booker-api", testUserStore{
+		"admin": {Username: "admin", PasswordHash: "$2a$10$7pEsC5lYWcqJUe26x3v/sO47ZvgFnSpH/RQHW6frVW0MiwT1ZUxGO", Role: RoleAdmin},
+	})
 
-	token, err := svc.Login("admin", "password")
+	token, err := svc.Login("admin", "admin123")
 	if err != nil {
 		t.Fatalf("login failed: %v", err)
 	}
@@ -26,7 +29,9 @@ func TestAuthServiceLoginAndParse(t *testing.T) {
 }
 
 func TestAuthServiceRejectsInvalidPassword(t *testing.T) {
-	svc := NewAuthService("secret", time.Hour, "admin:password:admin")
+	svc := NewAuthService("secret", time.Hour, "event-booker", "event-booker-api", testUserStore{
+		"admin": {Username: "admin", PasswordHash: "$2a$10$7pEsC5lYWcqJUe26x3v/sO47ZvgFnSpH/RQHW6frVW0MiwT1ZUxGO", Role: RoleAdmin},
+	})
 
 	_, err := svc.Login("admin", "wrong")
 	if !errors.Is(err, domain.ErrUnauthorized) {
@@ -35,10 +40,20 @@ func TestAuthServiceRejectsInvalidPassword(t *testing.T) {
 }
 
 func TestAuthServiceRejectsUnknownUser(t *testing.T) {
-	svc := NewAuthService("secret", time.Hour, "admin:password:admin")
+	svc := NewAuthService("secret", time.Hour, "event-booker", "event-booker-api", testUserStore{})
 
 	_, err := svc.Login("guest", "password")
 	if !errors.Is(err, domain.ErrUnauthorized) {
 		t.Fatalf("expected unauthorized, got %v", err)
 	}
+}
+
+type testUserStore map[string]domain.User
+
+func (s testUserStore) GetUserByUsername(_ context.Context, username string) (*domain.User, error) {
+	user, ok := s[username]
+	if !ok {
+		return nil, domain.ErrUnauthorized
+	}
+	return &user, nil
 }

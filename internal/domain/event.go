@@ -43,6 +43,15 @@ type Booking struct {
 	UpdatedAt     time.Time
 }
 
+type User struct {
+	ID           int64
+	Username     string
+	PasswordHash string
+	Role         string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 type NotificationEventType string
 
 const (
@@ -51,9 +60,18 @@ const (
 	NotificationBookingCancelled NotificationEventType = "booking_cancelled"
 )
 
+type NotificationChannel string
+
+const (
+	NotificationChannelLog      NotificationChannel = "log"
+	NotificationChannelEmail    NotificationChannel = "email"
+	NotificationChannelTelegram NotificationChannel = "telegram"
+)
+
 type NotificationEvent struct {
 	ID          int64
 	Type        NotificationEventType
+	Channel     NotificationChannel
 	Booking     Booking
 	Attempts    int
 	MaxAttempts int

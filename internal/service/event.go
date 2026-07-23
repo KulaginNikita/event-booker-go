@@ -22,7 +22,7 @@ const (
 	maxEventFuture    = 2 * 365 * 24 * time.Hour
 	defaultListLimit  = 20
 	maxListLimit      = 100
-	outboxBatchSize   = 50
+	outboxBatchSize   = 10
 	outboxBaseBackoff = 30 * time.Second
 	outboxMaxBackoff  = 10 * time.Minute
 )
@@ -33,6 +33,7 @@ type EventRepository interface {
 	CreateEvent(ctx context.Context, event *domain.Event) error
 	ListEvents(ctx context.Context, filter domain.ListEventsFilter) ([]domain.Event, error)
 	GetEvent(ctx context.Context, id int64) (*domain.Event, error)
+	ListBookingsByOwner(ctx context.Context, ownerUsername string) ([]domain.Booking, error)
 	Book(ctx context.Context, eventID int64, ownerUsername string, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error)
 	Confirm(ctx context.Context, eventID int64, bookingID int64, actorUsername string, isAdmin bool) (*domain.Booking, error)
 	CancelExpired(ctx context.Context) ([]domain.Booking, error)
@@ -43,9 +44,7 @@ type EventRepository interface {
 }
 
 type Notifier interface {
-	BookingCreated(ctx context.Context, booking domain.Booking) error
-	BookingConfirmed(ctx context.Context, booking domain.Booking) error
-	BookingCancelled(ctx context.Context, booking domain.Booking) error
+	Notify(ctx context.Context, item domain.NotificationEvent) error
 }
 
 type CreateEventInput struct {
@@ -80,14 +79,19 @@ type EventService struct {
 	notifier        Notifier
 	paymentDeadline time.Duration
 	log             *zap.SugaredLogger
+	metrics         Metrics
 }
 
-func NewEventService(repo EventRepository, notifier Notifier, paymentDeadline time.Duration, log *zap.SugaredLogger) *EventService {
+func NewEventService(repo EventRepository, notifier Notifier, paymentDeadline time.Duration, log *zap.SugaredLogger, metrics Metrics) *EventService {
+	if metrics == nil {
+		metrics = noopMetrics{}
+	}
 	return &EventService{
 		repo:            repo,
 		notifier:        notifier,
 		paymentDeadline: paymentDeadline,
 		log:             log,
+		metrics:         metrics,
 	}
 }
 
@@ -116,6 +120,7 @@ func (s *EventService) CreateEvent(ctx context.Context, in CreateEventInput) (*d
 	if err := s.repo.CreateEvent(ctx, event); err != nil {
 		return nil, err
 	}
+	s.metrics.EventCreated()
 	return event, nil
 }
 
@@ -146,6 +151,14 @@ func (s *EventService) GetEvent(ctx context.Context, id int64) (*domain.Event, e
 	return s.repo.GetEvent(ctx, id)
 }
 
+func (s *EventService) ListMyBookings(ctx context.Context, username string) ([]domain.Booking, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, domain.ErrUnauthorized
+	}
+	return s.repo.ListBookingsByOwner(ctx, username)
+}
+
 func (s *EventService) Book(ctx context.Context, in BookInput) (*domain.Booking, error) {
 	ownerUsername := strings.TrimSpace(in.OwnerUsername)
 	userName := strings.TrimSpace(in.UserName)
@@ -167,6 +180,7 @@ func (s *EventService) Book(ctx context.Context, in BookInput) (*domain.Booking,
 	if err != nil {
 		return nil, err
 	}
+	s.metrics.BookingCreated()
 	return booking, nil
 }
 
@@ -179,6 +193,7 @@ func (s *EventService) Confirm(ctx context.Context, in ConfirmInput) (*domain.Bo
 	if err != nil {
 		return nil, err
 	}
+	s.metrics.BookingConfirmed()
 	return booking, nil
 }
 
@@ -187,7 +202,9 @@ func (s *EventService) CancelExpired(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return len(cancelled), nil
+	count := len(cancelled)
+	s.metrics.BookingsCancelled(count)
+	return count, nil
 }
 
 func (s *EventService) DispatchNotifications(ctx context.Context) (int, error) {
@@ -198,6 +215,12 @@ func (s *EventService) DispatchNotifications(ctx context.Context) (int, error) {
 
 	sent := 0
 	for _, item := range items {
+		if staleNotification(item) {
+			if err := s.repo.MarkNotificationSent(ctx, item.ID); err != nil {
+				return sent, err
+			}
+			continue
+		}
 		if err := s.dispatchNotification(ctx, item); err != nil {
 			s.log.Warnw("booking notification failed",
 				"outbox_id", item.ID,
@@ -210,17 +233,20 @@ func (s *EventService) DispatchNotifications(ctx context.Context) (int, error) {
 				if markErr := s.repo.MarkNotificationFailed(ctx, item.ID, err.Error()); markErr != nil {
 					return sent, markErr
 				}
+				s.metrics.NotificationFailed(string(item.Type))
 				continue
 			}
 			if rescheduleErr := s.repo.RescheduleNotification(ctx, item.ID, nextNotificationAttempt(item.Attempts), err.Error()); rescheduleErr != nil {
 				return sent, rescheduleErr
 			}
+			s.metrics.NotificationRescheduled(string(item.Type))
 			continue
 		}
 
 		if err := s.repo.MarkNotificationSent(ctx, item.ID); err != nil {
 			return sent, err
 		}
+		s.metrics.NotificationSent(string(item.Type))
 		sent++
 	}
 
@@ -228,25 +254,37 @@ func (s *EventService) DispatchNotifications(ctx context.Context) (int, error) {
 }
 
 func (s *EventService) dispatchNotification(ctx context.Context, item domain.NotificationEvent) error {
+	return s.notifier.Notify(ctx, item)
+}
+
+func staleNotification(item domain.NotificationEvent) bool {
 	switch item.Type {
 	case domain.NotificationBookingCreated:
-		return s.notifier.BookingCreated(ctx, item.Booking)
+		return item.Booking.Status != domain.StatusPending
 	case domain.NotificationBookingConfirmed:
-		return s.notifier.BookingConfirmed(ctx, item.Booking)
+		return item.Booking.Status != domain.StatusConfirmed
 	case domain.NotificationBookingCancelled:
-		return s.notifier.BookingCancelled(ctx, item.Booking)
+		return item.Booking.Status != domain.StatusCancelled
 	default:
-		return domain.ErrInvalidState
+		return true
 	}
 }
 
 func nextNotificationAttempt(attempts int) time.Time {
-	delay := time.Duration(attempts) * outboxBaseBackoff
-	if delay <= 0 {
-		delay = outboxBaseBackoff
+	if attempts <= 0 {
+		attempts = 1
 	}
+	delay := outboxBaseBackoff << minInt(attempts-1, 5)
 	if delay > outboxMaxBackoff {
 		delay = outboxMaxBackoff
 	}
-	return time.Now().UTC().Add(delay)
+	jitter := time.Duration(time.Now().UnixNano() % int64(outboxBaseBackoff/2+1))
+	return time.Now().UTC().Add(delay + jitter)
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

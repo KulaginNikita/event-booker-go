@@ -19,6 +19,7 @@ type EventService interface {
 	CreateEvent(ctx context.Context, in service.CreateEventInput) (*domain.Event, error)
 	ListEvents(ctx context.Context, in service.ListEventsInput) ([]domain.Event, error)
 	GetEvent(ctx context.Context, id int64) (*domain.Event, error)
+	ListMyBookings(ctx context.Context, username string) ([]domain.Booking, error)
 	Book(ctx context.Context, in service.BookInput) (*domain.Booking, error)
 	Confirm(ctx context.Context, in service.ConfirmInput) (*domain.Booking, error)
 }
@@ -136,7 +137,36 @@ func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toEventResponse(event))
+	writeJSON(w, http.StatusOK, toPublicEventResponse(event))
+}
+
+func (h *Handler) EventBookings(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+
+	event, err := h.service.GetEvent(r.Context(), id)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toBookingResponses(event.Bookings))
+}
+
+func (h *Handler) MyBookings(w http.ResponseWriter, r *http.Request) {
+	username, _, ok := currentUser(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: domain.ErrUnauthorized.Error()})
+		return
+	}
+
+	bookings, err := h.service.ListMyBookings(r.Context(), username)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toBookingResponses(bookings))
 }
 
 func (h *Handler) Book(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +238,9 @@ func (h *Handler) handleError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrNoSeats):
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error()})
 	case errors.Is(err, domain.ErrBookingExpired),
-		errors.Is(err, domain.ErrBookingNotPending):
+		errors.Is(err, domain.ErrBookingNotPending),
+		errors.Is(err, domain.ErrAlreadyBooked),
+		errors.Is(err, domain.ErrEventAlreadyStarted):
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error()})
 	case errors.Is(err, domain.ErrInvalidTitle),
 		errors.Is(err, domain.ErrInvalidDate),

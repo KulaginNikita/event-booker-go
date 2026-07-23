@@ -1,12 +1,15 @@
 package service
 
 import (
-	"crypto/subtle"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/KulaginNikita/event-booker/internal/domain"
 )
@@ -19,7 +22,9 @@ const (
 type AuthService struct {
 	secret   []byte
 	ttl      time.Duration
-	accounts map[string]Account
+	issuer   string
+	audience []string
+	store    UserStore
 }
 
 type Claims struct {
@@ -27,36 +32,57 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-type Account struct {
-	Username string
-	Password string
-	Role     string
+type UserStore interface {
+	GetUserByUsername(ctx context.Context, username string) (*domain.User, error)
 }
 
-func NewAuthService(secret string, ttl time.Duration, users string) *AuthService {
+func NewAuthService(secret string, ttl time.Duration, issuer string, audience string, store UserStore) *AuthService {
 	if ttl <= 0 {
 		ttl = 12 * time.Hour
+	}
+	if issuer == "" {
+		issuer = "event-booker"
+	}
+	if audience == "" {
+		audience = "event-booker-api"
 	}
 	return &AuthService{
 		secret:   []byte(secret),
 		ttl:      ttl,
-		accounts: parseAccounts(users),
+		issuer:   issuer,
+		audience: []string{audience},
+		store:    store,
 	}
 }
 
 func (s *AuthService) Login(username string, password string) (string, error) {
 	username = strings.TrimSpace(username)
-	password = strings.TrimSpace(password)
-	account, ok := s.accounts[username]
-	if username == "" || password == "" || !ok || !sameSecret(account.Password, password) {
+	if username == "" || strings.TrimSpace(password) == "" || s.store == nil || len(s.secret) == 0 {
+		return "", domain.ErrUnauthorized
+	}
+	user, err := s.store.GetUserByUsername(context.Background(), username)
+	if err != nil {
+		return "", domain.ErrUnauthorized
+	}
+	if !validRole(user.Role) {
+		return "", domain.ErrUnauthorized
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		return "", domain.ErrUnauthorized
 	}
 
 	now := time.Now().UTC()
+	jti, err := newJTI()
+	if err != nil {
+		return "", err
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
-		Role: account.Role,
+		Role: user.Role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
+			Issuer:    s.issuer,
+			Audience:  s.audience,
+			ID:        jti,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.ttl)),
 		},
@@ -76,8 +102,11 @@ func (s *AuthService) Parse(tokenString string) (*Claims, error) {
 			return nil, domain.ErrUnauthorized
 		}
 		return s.secret, nil
-	})
+	}, jwt.WithIssuer(s.issuer), jwt.WithAudience(s.audience[0]))
 	if err != nil || !token.Valid || !validRole(claims.Role) {
+		return nil, domain.ErrUnauthorized
+	}
+	if claims.ID == "" {
 		return nil, domain.ErrUnauthorized
 	}
 	return claims, nil
@@ -87,26 +116,10 @@ func validRole(role string) bool {
 	return role == RoleAdmin || role == RoleUser
 }
 
-func parseAccounts(raw string) map[string]Account {
-	accounts := make(map[string]Account)
-	for _, part := range strings.Split(raw, ",") {
-		fields := strings.Split(part, ":")
-		if len(fields) != 3 {
-			continue
-		}
-		account := Account{
-			Username: strings.TrimSpace(fields[0]),
-			Password: strings.TrimSpace(fields[1]),
-			Role:     strings.TrimSpace(fields[2]),
-		}
-		if account.Username == "" || account.Password == "" || !validRole(account.Role) {
-			continue
-		}
-		accounts[account.Username] = account
+func newJTI() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("generate jwt id: %w", err)
 	}
-	return accounts
-}
-
-func sameSecret(expected string, actual string) bool {
-	return subtle.ConstantTimeCompare([]byte(expected), []byte(actual)) == 1
+	return hex.EncodeToString(buf[:]), nil
 }

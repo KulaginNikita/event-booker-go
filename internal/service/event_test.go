@@ -96,7 +96,7 @@ func TestEventServiceConfirmReturnsBooking(t *testing.T) {
 	}
 	notifier := &mockNotifier{}
 	log := zap.NewNop().Sugar()
-	svc := NewEventService(repo, notifier, time.Minute, log)
+	svc := NewEventService(repo, notifier, time.Minute, log, nil)
 
 	booking, err := svc.Confirm(context.Background(), ConfirmInput{
 		EventID:       42,
@@ -135,7 +135,7 @@ func TestEventServiceCancelExpiredReturnsCancelledCount(t *testing.T) {
 	}
 	notifier := &mockNotifier{}
 	log := zap.NewNop().Sugar()
-	svc := NewEventService(repo, notifier, time.Minute, log)
+	svc := NewEventService(repo, notifier, time.Minute, log, nil)
 
 	count, err := svc.CancelExpired(context.Background())
 	if err != nil {
@@ -152,14 +152,15 @@ func TestEventServiceDispatchNotificationsMarksSent(t *testing.T) {
 			{
 				ID:          10,
 				Type:        domain.NotificationBookingCreated,
+				Channel:     domain.NotificationChannelEmail,
 				Attempts:    1,
 				MaxAttempts: 5,
-				Booking:     domain.Booking{ID: 7, EventTitle: "Go workshop", UserEmail: "ann@example.com"},
+				Booking:     domain.Booking{ID: 7, EventTitle: "Go workshop", UserEmail: "ann@example.com", Status: domain.StatusPending},
 			},
 		},
 	}
 	notifier := &mockNotifier{}
-	svc := NewEventService(repo, notifier, time.Minute, zap.NewNop().Sugar())
+	svc := NewEventService(repo, notifier, time.Minute, zap.NewNop().Sugar(), nil)
 
 	count, err := svc.DispatchNotifications(context.Background())
 	if err != nil {
@@ -182,14 +183,15 @@ func TestEventServiceDispatchNotificationsReschedulesFailedSend(t *testing.T) {
 			{
 				ID:          11,
 				Type:        domain.NotificationBookingCreated,
+				Channel:     domain.NotificationChannelEmail,
 				Attempts:    1,
 				MaxAttempts: 5,
-				Booking:     domain.Booking{ID: 8, EventTitle: "Go workshop", UserEmail: "ann@example.com"},
+				Booking:     domain.Booking{ID: 8, EventTitle: "Go workshop", UserEmail: "ann@example.com", Status: domain.StatusPending},
 			},
 		},
 	}
 	notifier := &mockNotifier{failCreated: true}
-	svc := NewEventService(repo, notifier, time.Minute, zap.NewNop().Sugar())
+	svc := NewEventService(repo, notifier, time.Minute, zap.NewNop().Sugar(), nil)
 
 	count, err := svc.DispatchNotifications(context.Background())
 	if err != nil {
@@ -205,7 +207,7 @@ func TestEventServiceDispatchNotificationsReschedulesFailedSend(t *testing.T) {
 
 func newTestService(repo *mockRepo) *EventService {
 	log := zap.NewNop().Sugar()
-	return NewEventService(repo, &mockNotifier{}, 2*time.Minute, log)
+	return NewEventService(repo, &mockNotifier{}, 2*time.Minute, log, nil)
 }
 
 type mockRepo struct {
@@ -232,6 +234,12 @@ func (m *mockRepo) ListEvents(_ context.Context, _ domain.ListEventsFilter) ([]d
 
 func (m *mockRepo) GetEvent(_ context.Context, _ int64) (*domain.Event, error) {
 	return nil, domain.ErrEventNotFound
+}
+
+func (m *mockRepo) ListBookingsByOwner(_ context.Context, ownerUsername string) ([]domain.Booking, error) {
+	return []domain.Booking{
+		{ID: 1, OwnerUsername: ownerUsername, EventTitle: "Go workshop", Status: domain.StatusPending},
+	}, nil
 }
 
 func (m *mockRepo) Book(_ context.Context, eventID int64, ownerUsername string, userName string, userEmail string, userTelegram string, deadline time.Duration) (*domain.Booking, error) {
@@ -290,21 +298,18 @@ type mockNotifier struct {
 	failCreated    bool
 }
 
-func (m *mockNotifier) BookingCreated(_ context.Context, _ domain.Booking) error {
-	if m.failCreated {
+func (m *mockNotifier) Notify(_ context.Context, item domain.NotificationEvent) error {
+	if m.failCreated && item.Type == domain.NotificationBookingCreated {
 		return errors.New("send failed")
 	}
-	m.createdCalls++
-	return nil
-}
-
-func (m *mockNotifier) BookingConfirmed(_ context.Context, _ domain.Booking) error {
-	m.confirmedCalls++
-	return nil
-}
-
-func (m *mockNotifier) BookingCancelled(_ context.Context, _ domain.Booking) error {
-	m.cancelledCalls++
+	switch item.Type {
+	case domain.NotificationBookingCreated:
+		m.createdCalls++
+	case domain.NotificationBookingConfirmed:
+		m.confirmedCalls++
+	case domain.NotificationBookingCancelled:
+		m.cancelledCalls++
+	}
 	return nil
 }
 

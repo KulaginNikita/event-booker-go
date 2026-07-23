@@ -2,8 +2,8 @@ package notifier
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -16,46 +16,56 @@ type BookingNotifier interface {
 	BookingCancelled(ctx context.Context, booking domain.Booking) error
 }
 
+type ChannelNotifier struct {
+	Channel  domain.NotificationChannel
+	Notifier BookingNotifier
+}
+
 type MultiNotifier struct {
-	items []BookingNotifier
+	items map[domain.NotificationChannel]BookingNotifier
 	log   *zap.SugaredLogger
 }
 
-func NewMulti(log *zap.SugaredLogger, items ...BookingNotifier) *MultiNotifier {
-	return &MultiNotifier{items: items, log: log}
+func NewChannel(channel domain.NotificationChannel, item BookingNotifier) ChannelNotifier {
+	return ChannelNotifier{Channel: channel, Notifier: item}
 }
 
-func (n *MultiNotifier) BookingCreated(ctx context.Context, booking domain.Booking) error {
-	return n.send(ctx, booking, "created", func(item BookingNotifier) error {
-		return item.BookingCreated(ctx, booking)
-	})
-}
-
-func (n *MultiNotifier) BookingConfirmed(ctx context.Context, booking domain.Booking) error {
-	return n.send(ctx, booking, "confirmed", func(item BookingNotifier) error {
-		return item.BookingConfirmed(ctx, booking)
-	})
-}
-
-func (n *MultiNotifier) BookingCancelled(ctx context.Context, booking domain.Booking) error {
-	return n.send(ctx, booking, "cancelled", func(item BookingNotifier) error {
-		return item.BookingCancelled(ctx, booking)
-	})
-}
-
-func (n *MultiNotifier) send(ctx context.Context, booking domain.Booking, event string, sendFn func(item BookingNotifier) error) error {
-	var result error
-	for _, item := range n.items {
-		if item == nil {
+func NewMulti(log *zap.SugaredLogger, items ...ChannelNotifier) *MultiNotifier {
+	result := &MultiNotifier{items: make(map[domain.NotificationChannel]BookingNotifier), log: log}
+	for _, item := range items {
+		if item.Channel == "" || item.Notifier == nil {
 			continue
 		}
-		if err := sendFn(item); err != nil {
-			n.log.Warnw("booking notifier failed", "booking_id", booking.ID, "event", event, "error", err)
-			result = errors.Join(result, err)
-		}
+		result.items[item.Channel] = item.Notifier
 	}
-	if result != nil {
-		return fmt.Errorf("send %s notifications: %w", event, result)
+	return result
+}
+
+func (n *MultiNotifier) Notify(ctx context.Context, item domain.NotificationEvent) error {
+	notifier, ok := n.items[item.Channel]
+	if !ok {
+		return fmt.Errorf("notification channel %q is not configured", item.Channel)
 	}
-	return nil
+
+	switch item.Type {
+	case domain.NotificationBookingCreated:
+		return notifier.BookingCreated(ctx, item.Booking)
+	case domain.NotificationBookingConfirmed:
+		return notifier.BookingConfirmed(ctx, item.Booking)
+	case domain.NotificationBookingCancelled:
+		return notifier.BookingCancelled(ctx, item.Booking)
+	default:
+		return fmt.Errorf("unknown notification event type %q", item.Type)
+	}
+}
+
+func ParseChannel(raw string) domain.NotificationChannel {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(domain.NotificationChannelEmail):
+		return domain.NotificationChannelEmail
+	case string(domain.NotificationChannelTelegram):
+		return domain.NotificationChannelTelegram
+	default:
+		return domain.NotificationChannelLog
+	}
 }

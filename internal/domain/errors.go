@@ -6,6 +6,8 @@ var (
 	ErrEventNotFound        = errors.New("event not found")
 	ErrBookingNotFound      = errors.New("booking not found")
 	ErrNoSeats              = errors.New("no free seats")
+	ErrAlreadyBooked        = errors.New("user already has active booking for this event")
+	ErrEventAlreadyStarted  = errors.New("event already started")
 	ErrBookingExpired       = errors.New("booking expired")
 	ErrBookingNotPending    = errors.New("booking is not pending")
 	ErrInvalidTitle         = errors.New("invalid event title")

@@ -52,7 +52,8 @@ type BookingConfig struct {
 type AuthConfig struct {
 	JWTSecret string
 	TokenTTL  time.Duration
-	Users     string
+	Issuer    string
+	Audience  string
 }
 
 type SchedulerConfig struct {
@@ -105,9 +106,10 @@ func Load() (*Config, error) {
 			PaymentDeadline: envDuration("APP_BOOKING_PAYMENT_DEADLINE", 2*time.Minute),
 		},
 		Auth: AuthConfig{
-			JWTSecret: envString("APP_AUTH_JWT_SECRET", "local-dev-secret-change-me"),
+			JWTSecret: envString("APP_AUTH_JWT_SECRET", ""),
 			TokenTTL:  envDuration("APP_AUTH_TOKEN_TTL", 12*time.Hour),
-			Users:     envString("APP_AUTH_USERS", "admin:admin123:admin,user:user123:user"),
+			Issuer:    envString("APP_AUTH_ISSUER", "event-booker"),
+			Audience:  envString("APP_AUTH_AUDIENCE", "event-booker-api"),
 		},
 		Scheduler: SchedulerConfig{
 			Interval: envDuration("APP_SCHEDULER_INTERVAL", 10*time.Second),
@@ -134,6 +136,9 @@ func Load() (*Config, error) {
 	}
 	if c.Postgres.DSN == "" {
 		return nil, fmt.Errorf("APP_POSTGRES_DSN is required")
+	}
+	if c.Auth.JWTSecret == "" {
+		return nil, fmt.Errorf("APP_AUTH_JWT_SECRET is required")
 	}
 
 	return &c, nil

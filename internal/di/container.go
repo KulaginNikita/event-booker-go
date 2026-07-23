@@ -11,6 +11,7 @@ import (
 
 	httpapi "github.com/KulaginNikita/event-booker/internal/api/http"
 	"github.com/KulaginNikita/event-booker/internal/config"
+	"github.com/KulaginNikita/event-booker/internal/metrics"
 	"github.com/KulaginNikita/event-booker/internal/migrator"
 	"github.com/KulaginNikita/event-booker/internal/notifier"
 	pgrepo "github.com/KulaginNikita/event-booker/internal/repository/postgres"
@@ -26,6 +27,7 @@ type Container struct {
 	ZapLogger *zap.Logger
 	Closer    *closer.Closer
 	Repo      *pgrepo.EventRepository
+	Metrics   *metrics.Metrics
 	Notifier  *notifier.MultiNotifier
 	Service   *service.EventService
 	Auth      *service.AuthService
@@ -55,6 +57,7 @@ func NewContainer(parentCtx context.Context, cfg *config.Config, log *zap.Sugare
 	if err := c.initRepositories(); err != nil {
 		return nil, fmt.Errorf("init repositories: %w", err)
 	}
+	c.initMetrics()
 	c.initServices()
 	c.initScheduler()
 	c.initHTTP()
@@ -97,15 +100,23 @@ func (c *Container) initRepositories() error {
 	return nil
 }
 
+func (c *Container) initMetrics() {
+	c.Metrics = metrics.New()
+}
+
 func (c *Container) initServices() {
 	emailNotifier := notifier.NewEmail(c.Config.Email)
 	telegramNotifier, err := notifier.NewTelegram(c.ctx, c.Config.Telegram, c.Repo, c.Logger)
 	if err != nil {
 		c.Logger.Errorw("telegram notifier disabled", "error", err)
 	}
-	c.Notifier = notifier.NewMulti(c.Logger, notifier.NewLogNotifier(c.Logger), emailNotifier, telegramNotifier)
-	c.Service = service.NewEventService(c.Repo, c.Notifier, c.Config.Booking.PaymentDeadline, c.Logger)
-	c.Auth = service.NewAuthService(c.Config.Auth.JWTSecret, c.Config.Auth.TokenTTL, c.Config.Auth.Users)
+	c.Notifier = notifier.NewMulti(c.Logger,
+		notifier.NewChannel("log", notifier.NewLogNotifier(c.Logger)),
+		notifier.NewChannel("email", emailNotifier),
+		notifier.NewChannel("telegram", telegramNotifier),
+	)
+	c.Service = service.NewEventService(c.Repo, c.Notifier, c.Config.Booking.PaymentDeadline, c.Logger, c.Metrics)
+	c.Auth = service.NewAuthService(c.Config.Auth.JWTSecret, c.Config.Auth.TokenTTL, c.Config.Auth.Issuer, c.Config.Auth.Audience, c.Repo)
 	c.Health = service.NewHealthService(c.Repo)
 }
 
@@ -115,5 +126,5 @@ func (c *Container) initScheduler() {
 
 func (c *Container) initHTTP() {
 	c.Handler = httpapi.NewHandler(c.Service, c.Auth, c.Health, c.Logger)
-	c.Router = httpapi.NewRouter(c.Handler)
+	c.Router = httpapi.NewRouter(c.Handler, c.Metrics, c.Metrics.Handler())
 }

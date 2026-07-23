@@ -17,6 +17,12 @@ func toEventResponse(event *domain.Event) EventResponse {
 	}
 }
 
+func toPublicEventResponse(event *domain.Event) EventResponse {
+	response := toEventResponse(event)
+	response.Bookings = nil
+	return response
+}
+
 func toEventResponses(events []domain.Event) []EventResponse {
 	result := make([]EventResponse, 0, len(events))
 	for _, event := range events {
